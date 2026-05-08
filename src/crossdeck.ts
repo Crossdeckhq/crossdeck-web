@@ -1,9 +1,9 @@
 /**
- * Public API surface for @crossdeck/web.
+ * Public API surface for @cross-deck/web.
  *
  * Usage (browser):
  *
- *   import { Crossdeck } from "@crossdeck/web";
+ *   import { Crossdeck } from "@cross-deck/web";
  *
  *   Crossdeck.start({ publicKey: "cd_pub_live_…" });
  *
@@ -17,8 +17,8 @@
  *
  * Usage (Node):
  *
- *   import { Crossdeck } from "@crossdeck/web";
- *   import { MemoryStorage } from "@crossdeck/web";
+ *   import { Crossdeck } from "@cross-deck/web";
+ *   import { MemoryStorage } from "@cross-deck/web";
  *
  *   Crossdeck.start({
  *     publicKey: "cd_pub_test_…",

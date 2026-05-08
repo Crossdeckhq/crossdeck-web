@@ -36,7 +36,7 @@ describe("HttpClient", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const [, init] = fetchSpy.mock.calls[0]!;
     expect(init.headers["Authorization"]).toBe("Bearer cd_pub_test_001");
-    expect(init.headers["Crossdeck-Sdk-Version"]).toContain("@crossdeck/web@0.1.0-test");
+    expect(init.headers["Crossdeck-Sdk-Version"]).toContain("@cross-deck/web@0.1.0-test");
     expect(init.headers["Accept"]).toBe("application/json");
   });
 

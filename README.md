@@ -1,15 +1,15 @@
-# @crossdeck/web
+# @cross-deck/web
 
 The Crossdeck SDK for browsers and Node.js. One package, one mental model, every Crossdeck client API in five lines of setup.
 
 ```bash
-npm install @crossdeck/web
+npm install @cross-deck/web
 ```
 
 ## Quick start
 
 ```ts
-import { Crossdeck } from "@crossdeck/web";
+import { Crossdeck } from "@cross-deck/web";
 
 // 1. Boot once at app start
 Crossdeck.start({ publicKey: "cd_pub_live_…" });
@@ -152,7 +152,7 @@ Diagnostic snapshot — useful for development consoles and bug reports:
 Every async method can throw `CrossdeckError`. Synchronous methods throw on configuration mistakes (calling before `start()`, invalid key prefix).
 
 ```ts
-import { CrossdeckError } from "@crossdeck/web";
+import { CrossdeckError } from "@cross-deck/web";
 
 try {
   await Crossdeck.identify("user_847");
@@ -181,7 +181,7 @@ Error fields:
 The SDK works the same way in Node 18+:
 
 ```ts
-import { Crossdeck, MemoryStorage } from "@crossdeck/web";
+import { Crossdeck, MemoryStorage } from "@cross-deck/web";
 
 Crossdeck.start({
   publicKey: process.env.CROSSDECK_PUBLIC_KEY!,

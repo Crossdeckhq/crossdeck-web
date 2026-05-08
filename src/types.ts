@@ -1,5 +1,5 @@
 /**
- * Public types for @crossdeck/web. These mirror the wire format
+ * Public types for @cross-deck/web. These mirror the wire format
  * exposed by the v1 backend API. Keep them in lockstep with
  * backend/src/api/v1-types.ts — same field names, same nullability.
  */

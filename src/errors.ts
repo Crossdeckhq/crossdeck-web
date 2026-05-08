@@ -1,5 +1,5 @@
 /**
- * Stripe-style error wrapper for @crossdeck/web.
+ * Stripe-style error wrapper for @cross-deck/web.
  *
  * Mirrors the wire shape returned by the v1 backend (see
  * backend/src/api/v1-errors.ts) so SDK consumers can `catch`

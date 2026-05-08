@@ -1,5 +1,5 @@
 /**
- * @crossdeck/web — public entry point.
+ * @cross-deck/web — public entry point.
  *
  * The default export is a singleton `Crossdeck` instance. Most apps want
  * exactly one client; instantiate `CrossdeckClient` directly if you need

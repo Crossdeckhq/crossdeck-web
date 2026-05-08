@@ -9,7 +9,7 @@
 
 import { CrossdeckError, crossdeckErrorFromResponse } from "./errors";
 
-export const SDK_NAME = "@crossdeck/web";
+export const SDK_NAME = "@cross-deck/web";
 export const SDK_VERSION = "0.1.0";
 export const DEFAULT_BASE_URL = "https://api.cross-deck.com/v1";
 
