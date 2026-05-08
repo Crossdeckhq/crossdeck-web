@@ -21,6 +21,7 @@ export type {
   AliasResult,
   PurchaseResult,
   HeartbeatResponse,
+  Diagnostics,
   Environment,
   Platform,
   AuditRail,

@@ -37,6 +37,7 @@ import { randomChars } from "./identity";
 import type {
   AliasResult,
   CrossdeckOptions,
+  Diagnostics,
   EntitlementsListResponse,
   EventProperties,
   HeartbeatResponse,
@@ -248,9 +249,30 @@ export class CrossdeckClient {
   /**
    * Diagnostic: current state + queue stats. Useful for the dashboard's
    * heartbeat row and debugging in dev.
+   *
+   * Returns a stable shape regardless of whether start() has been called —
+   * callers don't need to narrow on `started` to access `events` or
+   * `entitlements`. Pre-start values are sensible empties.
    */
-  diagnostics() {
-    if (!this.state) return { started: false };
+  diagnostics(): Diagnostics {
+    if (!this.state) {
+      return {
+        started: false,
+        anonymousId: null,
+        crossdeckCustomerId: null,
+        developerUserId: null,
+        sdkVersion: null,
+        baseUrl: null,
+        entitlements: { count: 0, lastUpdated: 0 },
+        events: {
+          buffered: 0,
+          dropped: 0,
+          inFlight: 0,
+          lastFlushAt: 0,
+          lastError: null,
+        },
+      };
+    }
     const s = this.state;
     return {
       started: true,

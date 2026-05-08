@@ -309,8 +309,12 @@ describe("purchaseApple", () => {
 });
 
 describe("diagnostics", () => {
-  it("returns started:false before start()", () => {
+  it("returns started:false with stable empty shape before start()", () => {
     const c = new CrossdeckClient();
-    expect(c.diagnostics()).toEqual({ started: false });
+    const d = c.diagnostics();
+    expect(d.started).toBe(false);
+    expect(d.anonymousId).toBeNull();
+    expect(d.events.buffered).toBe(0);
+    expect(d.entitlements.count).toBe(0);
   });
 });

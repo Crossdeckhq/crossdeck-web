@@ -118,3 +118,29 @@ export interface IdentifyOptions {
 
 /** Properties payload for track(). Arbitrary key/value, JSON-serialisable, ≤ 8 KB. */
 export type EventProperties = Record<string, unknown>;
+
+/**
+ * Diagnostic snapshot returned by Crossdeck.diagnostics(). Stable shape
+ * whether or not start() has been called — callers don't need to narrow
+ * on `started` to read `events` or `entitlements`. Pre-start values are
+ * sensible empties (zeros, nulls).
+ */
+export interface Diagnostics {
+  started: boolean;
+  anonymousId: string | null;
+  crossdeckCustomerId: string | null;
+  developerUserId: string | null;
+  sdkVersion: string | null;
+  baseUrl: string | null;
+  entitlements: {
+    count: number;
+    lastUpdated: number;
+  };
+  events: {
+    buffered: number;
+    dropped: number;
+    inFlight: number;
+    lastFlushAt: number;
+    lastError: string | null;
+  };
+}
