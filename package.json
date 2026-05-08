@@ -6,8 +6,7 @@
   "homepage": "https://cross-deck.com",
   "repository": {
     "type": "git",
-    "url": "https://github.com/VistaApps-za/crossdeck.git",
-    "directory": "sdks/web"
+    "url": "https://github.com/VistaApps-za/crossdeck-web.git"
   },
   "main": "./dist/index.cjs",
   "module": "./dist/index.mjs",
