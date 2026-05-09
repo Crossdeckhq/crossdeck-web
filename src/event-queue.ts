@@ -34,14 +34,29 @@ export interface QueuedEvent {
   crossdeckCustomerId?: string;
 }
 
+export interface BatchEnvelope {
+  appId: string;
+  environment: "production" | "sandbox";
+  sdk: { name: string; version: string };
+}
+
 export interface EventQueueConfig {
   http: HttpClient;
   batchSize: number;
   intervalMs: number;
+  /**
+   * Returns the NorthStar §13.1 envelope to attach to each batch POST.
+   * It's a function (not a value) so a future call to setDebugMode or a
+   * config swap can update the envelope without re-instantiating the
+   * queue.
+   */
+  envelope: () => BatchEnvelope;
   /** Schedule a function to run after `ms` ms. Default: setTimeout. Override for tests. */
   scheduler?: (fn: () => void, ms: number) => () => void;
   /** Called when the SDK drops events because the buffer is full. */
   onDrop?: (dropped: number) => void;
+  /** Called once after the first successful flush — drives the §16 "First event sent" signal. */
+  onFirstFlushSuccess?: () => void;
 }
 
 export interface EventQueueStats {
@@ -59,6 +74,7 @@ export class EventQueue {
   private lastFlushAt = 0;
   private lastError: string | null = null;
   private cancelTimer: (() => void) | null = null;
+  private firstFlushFired = false;
 
   constructor(private readonly cfg: EventQueueConfig) {}
 
@@ -92,12 +108,25 @@ export class EventQueue {
     this.inFlight += batch.length;
 
     try {
+      const env = this.cfg.envelope();
       const result = await this.cfg.http.request<IngestResponse>("POST", "/events", {
-        body: { events: batch },
+        body: {
+          // NorthStar §13.1 batch envelope. The backend validates these
+          // against the API-key-resolved app and rejects mismatches loudly
+          // (env_mismatch).
+          appId: env.appId,
+          environment: env.environment,
+          sdk: env.sdk,
+          events: batch,
+        },
       });
       this.lastFlushAt = Date.now();
       this.lastError = null;
       this.inFlight -= batch.length;
+      if (!this.firstFlushFired) {
+        this.firstFlushFired = true;
+        this.cfg.onFirstFlushSuccess?.();
+      }
       return result;
     } catch (err) {
       // Re-buffer at the front of the queue. Order matters less than
@@ -118,6 +147,9 @@ export class EventQueue {
     this.dropped = 0;
     this.inFlight = 0;
     this.lastError = null;
+    // Note: we deliberately do NOT reset firstFlushFired — the
+    // "First event sent" signal is a one-time onboarding moment per
+    // SDK instance lifetime, not per-identity.
   }
 
   getStats(): EventQueueStats {

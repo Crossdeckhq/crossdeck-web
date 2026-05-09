@@ -25,5 +25,7 @@ export type {
   Environment,
   Platform,
   AuditRail,
+  AutoTrackOptions,
 } from "./types";
+export type { DeviceInfo } from "./device-info";
 export type { CrossdeckErrorType, CrossdeckErrorPayload } from "./errors";

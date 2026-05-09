@@ -1,13 +1,12 @@
 {
   "name": "@cross-deck/web",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "description": "Crossdeck SDK for browsers and Node.js — verified subscriptions, entitlements, and product telemetry in one client.",
   "license": "MIT",
   "homepage": "https://cross-deck.com",
   "repository": {
     "type": "git",
-    "url": "https://github.com/VistaApps-za/crossdeck.git",
-    "directory": "sdks/web"
+    "url": "https://github.com/VistaApps-za/crossdeck-web.git"
   },
   "main": "./dist/index.cjs",
   "module": "./dist/index.mjs",
@@ -17,11 +16,17 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.mjs",
       "require": "./dist/index.cjs"
+    },
+    "./react": {
+      "types": "./dist/react.d.ts",
+      "import": "./dist/react.mjs",
+      "require": "./dist/react.cjs"
     }
   },
   "files": [
     "dist",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "sideEffects": false,
@@ -37,9 +42,20 @@
     "lint": "tsc --noEmit",
     "prepublishOnly": "npm run lint && npm test && npm run build"
   },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@types/node": "^20.14.0",
+    "@types/react": "^18.3.0",
     "@vitest/coverage-v8": "^2.1.9",
+    "jsdom": "^29.1.1",
+    "react": "^18.3.0",
     "tsup": "^8.3.5",
     "typescript": "^5.6.3",
     "vitest": "^2.1.9"

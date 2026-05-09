@@ -64,4 +64,88 @@ describe("EntitlementCache", () => {
     c.setFromList([ent("pro")]);
     expect(c.freshness).toBeGreaterThan(0);
   });
+
+  describe("subscribe (reactive listener API)", () => {
+    it("fires listeners after setFromList with the new state", () => {
+      const c = new EntitlementCache();
+      const calls: string[][] = [];
+      c.subscribe((entitlements) => calls.push(entitlements.map((e) => e.key)));
+
+      c.setFromList([ent("pro")]);
+      c.setFromList([ent("pro"), ent("ai_insights")]);
+
+      expect(calls).toEqual([["pro"], ["pro", "ai_insights"]]);
+    });
+
+    it("fires listeners on clear()", () => {
+      const c = new EntitlementCache();
+      c.setFromList([ent("pro")]);
+      const calls: string[][] = [];
+      c.subscribe((entitlements) => calls.push(entitlements.map((e) => e.key)));
+
+      c.clear();
+      expect(calls).toEqual([[]]);
+    });
+
+    it("does NOT fire on subscribe (only on future mutations)", () => {
+      const c = new EntitlementCache();
+      c.setFromList([ent("pro")]);
+      const calls: string[][] = [];
+      c.subscribe((entitlements) => calls.push(entitlements.map((e) => e.key)));
+      // No fire yet — caller must read state synchronously if they need it.
+      expect(calls).toEqual([]);
+    });
+
+    it("returns an unsubscribe function that prevents future calls", () => {
+      const c = new EntitlementCache();
+      const calls: string[][] = [];
+      const unsub = c.subscribe((entitlements) =>
+        calls.push(entitlements.map((e) => e.key)),
+      );
+      c.setFromList([ent("pro")]);
+      unsub();
+      c.setFromList([ent("ai_insights")]);
+      expect(calls).toEqual([["pro"]]);
+    });
+
+    it("unsubscribe is idempotent — calling twice is safe", () => {
+      const c = new EntitlementCache();
+      const unsub = c.subscribe(() => {});
+      unsub();
+      expect(() => unsub()).not.toThrow();
+    });
+
+    it("a listener throwing an error doesn't crash other listeners", () => {
+      const c = new EntitlementCache();
+      const calls: string[] = [];
+      c.subscribe(() => {
+        throw new Error("buggy consumer");
+      });
+      c.subscribe(() => calls.push("second listener fired"));
+
+      expect(() => c.setFromList([ent("pro")])).not.toThrow();
+      expect(calls).toEqual(["second listener fired"]);
+    });
+
+    it("a listener that unsubscribes itself during dispatch is safe", () => {
+      const c = new EntitlementCache();
+      const calls: string[] = [];
+      let unsub: (() => void) | null = null;
+      unsub = c.subscribe(() => {
+        calls.push("self-unsub listener fired");
+        unsub?.();
+      });
+      c.subscribe(() => calls.push("second listener fired"));
+
+      c.setFromList([ent("pro")]);
+      c.setFromList([ent("ai_insights")]);
+
+      expect(calls).toEqual([
+        "self-unsub listener fired",
+        "second listener fired",
+        // First listener already unsubscribed — only second fires now.
+        "second listener fired",
+      ]);
+    });
+  });
 });

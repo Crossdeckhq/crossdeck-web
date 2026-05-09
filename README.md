@@ -11,50 +11,134 @@ npm install @cross-deck/web
 ```ts
 import { Crossdeck } from "@cross-deck/web";
 
-// 1. Boot once at app start
-Crossdeck.start({ publicKey: "cd_pub_live_…" });
+// 1. Boot once at app start. Synchronous and idempotent.
+Crossdeck.init({
+  appId: "app_web_xxx",         // from the Crossdeck dashboard
+  publicKey: "cd_pub_live_…",   // publishable key, safe in client code
+  environment: "production",    // "production" or "sandbox"
+});
 
-// 2. After the user logs in, link the device to your user ID
-await Crossdeck.identify("user_847");
+// 2. Telemetry — fire-and-forget, batched in the background.
+Crossdeck.track("paywall_viewed", { variant: "v3" });
 
-// 3. Read entitlements (warms the local cache)
-await Crossdeck.getEntitlements();
+// 3. Auth + entitlements happen inside an async boot function (or a
+//    React useEffect, or any other async context). Top-level await is
+//    not portable across all bundlers.
+async function bootCrossdeck() {
+  // Wire identify() to YOUR auth state — never hardcode a placeholder.
+  await Crossdeck.identify(currentUser.id);
+  await Crossdeck.getEntitlements();   // warm the local cache
 
-// 4. Sync access checks (microsecond reads from cache)
-if (Crossdeck.isEntitled("pro")) {
-  showProFeatures();
+  // 4. Sync access checks (microsecond reads from cache).
+  if (Crossdeck.isEntitled("pro")) {
+    showProFeatures();
+  }
+}
+```
+
+### React quick start
+
+For React apps, install Crossdeck once at the root and use the
+`useEntitlement` hook from `@cross-deck/web/react` so components
+re-render when entitlements arrive:
+
+```tsx
+"use client"
+import { useEffect } from "react";
+import { Crossdeck } from "@cross-deck/web";
+import { useEntitlement } from "@cross-deck/web/react";
+
+export function CrossdeckProvider({ children }) {
+  useEffect(() => {
+    Crossdeck.init({
+      appId: "app_web_xxx",
+      publicKey: "cd_pub_live_…",
+      environment: "production",
+    });
+    Crossdeck.getEntitlements();   // warm the cache (fire-and-forget)
+  }, []);
+  return children;
 }
 
-// 5. Telemetry — fire-and-forget, batched in the background
-Crossdeck.track("paywall_viewed", { variant: "v3" });
+export function ProBadge() {
+  const isPro = useEntitlement("pro");
+  return isPro ? <span className="badge">Pro</span> : null;
+}
 ```
+
+`useEntitlement` subscribes to the SDK's reactive cache via
+`Crossdeck.onEntitlementsChange()`, so every component using the hook
+re-renders the moment entitlements change. SSR-safe: returns `false`
+on the server and hydrates correctly on the client.
 
 That's the full happy path.
 
 ## What it does
 
+- **Auto-tracking, on by default.** Sessions, page views, and device info (OS, browser, locale, timezone, screen size, app version) ship from boot. No instrumentation needed for the basics. Disable any of them via `autoTrack: { sessions: false }` etc.
 - **One identity for every device + user.** Pre-login events get an `anonymousId`. After login, `identify()` links them to your user ID through Crossdeck's identity graph. The SDK persists both so subsequent app launches resume where you left off.
 - **Synchronous entitlement reads.** `getEntitlements()` populates a local cache. `isEntitled("pro")` is a Set lookup — no network call, no waiting.
 - **Batched telemetry.** `track()` queues events in memory; the SDK flushes every 5 seconds (configurable) or when the buffer hits 20 events. Network failures re-queue the batch — events aren't lost on a flaky connection.
-- **Boot heartbeat.** On `start()` the SDK pings `/v1/sdk/heartbeat` so the dashboard's Apps page can show you "last seen" per install. Disable with `autoHeartbeat: false`.
+- **Boot heartbeat.** On `init()` the SDK pings `/v1/sdk/heartbeat` so the dashboard's Apps page can show you "last seen" per install. Disable with `autoHeartbeat: false`.
 - **Stripe-style errors.** Every async method throws `CrossdeckError` with `type`, `code`, `requestId`, and `status` — same shape as Stripe's SDKs, so generic error handlers transfer.
+
+## Auto-tracked events
+
+| Event | When |
+|---|---|
+| `session.started` | On boot. Carries `sessionId`. |
+| `session.ended` | On `pagehide` / `beforeunload`, OR when returning to a tab after >30 min idle. Carries `sessionId` and `durationMs`. |
+| `page.viewed` | On initial load + every SPA navigation (`history.pushState`, `replaceState`, `popstate`). Carries `path`, `url`, `search`, `hash`, `title`, `referrer`. |
+
+Every event — auto-tracked and developer-emitted — is enriched with the device-info payload below. Quick tab switches (Cmd-Tab, switching browser tabs) don't end the session — only real closes do, matching GA4's session-window convention.
+
+## Auto-attached device info
+
+Every event's `properties` is enriched with whatever the SDK can detect:
+
+```ts
+{
+  os: "macOS" | "iOS" | "Android" | "Windows" | "Linux",
+  osVersion: "14.4",
+  browser: "Safari" | "Chrome" | "Firefox" | "Edge" | "Opera",
+  browserVersion: "17.5",
+  locale: "en-US",
+  timezone: "Africa/Johannesburg",
+  screenWidth: 2560,
+  screenHeight: 1440,
+  viewportWidth: 1440,
+  viewportHeight: 900,
+  devicePixelRatio: 2,
+  appVersion: "1.2.3",   // only when you set Crossdeck.init({ appVersion })
+}
+```
+
+No fingerprinting, no IP collection on the event document, no canvas hashing. Privacy by default. Caller-supplied properties always override auto-detected ones, so you can override `appVersion` per event if you A/B builds.
 
 ## API
 
-### `Crossdeck.start(options)`
+### `Crossdeck.init(options)`
 
-Boot the client. Idempotent — calling twice with the same options is fine.
+Boot the client. Idempotent — calling twice with the same options is fine. (`Crossdeck.start()` is kept as a deprecated alias for v0.2.x callers.)
 
 ```ts
-Crossdeck.start({
+Crossdeck.init({
+  appId: "app_web_xxx",               // required — from the dashboard
   publicKey: "cd_pub_live_…",         // required
+  environment: "production",          // required — "production" | "sandbox"
   baseUrl: "https://api.cross-deck.com/v1",  // override for self-host or emulator
+  appVersion: "1.2.3",                // attached to every event as properties.appVersion
+  autoTrack: true,                    // default — sessions, page views, device info
+  // …or granular: autoTrack: { sessions: false } keeps page views + device info
   autoHeartbeat: true,                // default; set false for high-frequency boots
   eventFlushBatchSize: 20,            // default
   eventFlushIntervalMs: 5_000,        // default
   storage: customStorage,             // override the persistence adapter
+  debug: false,                       // verbose §16 debug signals when true
 });
 ```
+
+Crossdeck checks the key prefix matches `environment`: `cd_pub_test_…` must declare `"sandbox"`, `cd_pub_live_…` must declare `"production"`. Mismatches throw `CrossdeckError({ code: "environment_mismatch" })` at init time so a typo can't silently route prod telemetry into sandbox dashboards.
 
 The publishable key is safe to ship in client code. Crossdeck enforces origin allowlists (web), bundle-ID binding (mobile), and rate limits at the edge — see [docs/api-keys](https://cross-deck.com/docs/api-keys/) for the full security model.
 
@@ -92,24 +176,26 @@ Synchronous read from the local cache. Returns `false` until you've called `getE
 
 ### `Crossdeck.track(name, properties?)`
 
-Queue a telemetry event. Returns immediately. Events flush in batches; force a flush with `flushEvents()`:
+Queue a telemetry event. Returns immediately. Events flush in batches; force a flush with `flush()`:
 
 ```ts
 Crossdeck.track("checkout_started", { product: "annual_pro" });
 // …later, e.g. before page unload:
 window.addEventListener("beforeunload", () => {
-  void Crossdeck.flushEvents();
+  void Crossdeck.flush();
 });
 ```
 
 Event names match `[A-Za-z0-9_.\-:]+`, max 128 chars. Properties are JSON-serialisable, max 8 KB per event after JSON encoding.
 
-### `await Crossdeck.purchaseApple(input)`
+In `debug: true` mode the SDK warns (one signal per call) when property keys look like PII — `email`, `password`, `token`, `secret`, `card`, `phone`. Crossdeck never strips fields automatically; the warning is so accidental leaks surface during development, not in prod logs.
 
-Forward a StoreKit 2 transaction directly to Crossdeck for verification — closes the purchase-to-entitled latency from seconds to milliseconds (faster than waiting for the App Store webhook).
+### `await Crossdeck.syncPurchases(input)`
+
+Forward purchase evidence (Apple StoreKit 2) directly to Crossdeck for verification — closes the purchase-to-entitled latency from seconds to milliseconds (faster than waiting for the App Store webhook). (`purchaseApple()` is kept as a deprecated alias.)
 
 ```ts
-await Crossdeck.purchaseApple({
+await Crossdeck.syncPurchases({
   signedTransactionInfo: transaction.jsonRepresentation,  // from StoreKit 2
   signedRenewalInfo: subscription.signedRenewalInfo,      // optional
   appAccountToken: "uuid-…",                              // optional
@@ -120,15 +206,19 @@ Stripe and Google purchases are verified via webhooks (Stripe Connect platform e
 
 ### `await Crossdeck.heartbeat()`
 
-Manually send a heartbeat. Called automatically by `start()` unless `autoHeartbeat: false`. Returns the readiness summary the dashboard uses to display SDK installation status.
+Manually send a heartbeat. Called automatically by `init()` unless `autoHeartbeat: false`. Returns the readiness summary the dashboard uses to display SDK installation status.
 
 ### `Crossdeck.reset()`
 
 Wipe persisted identity + entitlement cache + queued events. Call on logout. The next session generates a fresh `anonymousId` and starts a clean identity-graph entry.
 
-### `Crossdeck.flushEvents()`
+### `Crossdeck.flush()`
 
-Force-flush the in-memory event queue. Useful before page unload or when shutting down a script.
+Force-flush the in-memory event queue. Useful before page unload or when shutting down a script. (`flushEvents()` is kept as a deprecated alias.)
+
+### `Crossdeck.setDebugMode(enabled)`
+
+Toggle the verbose debug-signal vocabulary at runtime (NorthStar §16). When enabled, the SDK emits a fixed set of `console.info` lines tagged `[crossdeck:sdk.<signal>]` for `sdk.configured`, `sdk.first_event_sent`, `sdk.no_identity`, `sdk.purchase_evidence_sent`, `sdk.environment_mismatch`, and `sdk.sensitive_property_warning`.
 
 ### `Crossdeck.diagnostics()`
 
@@ -149,7 +239,7 @@ Diagnostic snapshot — useful for development consoles and bug reports:
 
 ## Errors
 
-Every async method can throw `CrossdeckError`. Synchronous methods throw on configuration mistakes (calling before `start()`, invalid key prefix).
+Every async method can throw `CrossdeckError`. Synchronous methods throw on configuration mistakes (calling before `init()`, invalid key prefix, env mismatch).
 
 ```ts
 import { CrossdeckError } from "@cross-deck/web";
@@ -183,9 +273,11 @@ The SDK works the same way in Node 18+:
 ```ts
 import { Crossdeck, MemoryStorage } from "@cross-deck/web";
 
-Crossdeck.start({
+Crossdeck.init({
+  appId: process.env.CROSSDECK_APP_ID!,
   publicKey: process.env.CROSSDECK_PUBLIC_KEY!,
-  storage: new MemoryStorage(),  // session-only, no localStorage
+  environment: "sandbox",         // or "production"
+  storage: new MemoryStorage(),   // session-only, no localStorage
   autoHeartbeat: false,           // skip the boot ping in scripts
 });
 ```

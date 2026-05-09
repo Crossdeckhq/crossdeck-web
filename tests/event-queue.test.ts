@@ -20,6 +20,12 @@ function fakeHttp(behaviour: "ok" | "fail" = "ok") {
   };
 }
 
+const TEST_ENVELOPE = () => ({
+  appId: "app_web_test",
+  environment: "sandbox" as const,
+  sdk: { name: "@cross-deck/web", version: "0.3.0" },
+});
+
 describe("EventQueue", () => {
   it("flushes immediately when batchSize is reached", async () => {
     const http = fakeHttp("ok");
@@ -27,6 +33,7 @@ describe("EventQueue", () => {
       http: http as never,
       batchSize: 3,
       intervalMs: 10_000,
+      envelope: TEST_ENVELOPE,
       scheduler: () => () => {}, // never fire idle timer
     });
     q.enqueue(fakeEvent("a"));
@@ -47,6 +54,7 @@ describe("EventQueue", () => {
       http: http as never,
       batchSize: 100,
       intervalMs: 5,
+      envelope: TEST_ENVELOPE,
       scheduler: (fn) => {
         triggerIdle = fn;
         return () => {
@@ -67,6 +75,7 @@ describe("EventQueue", () => {
       http: http as never,
       batchSize: 2,
       intervalMs: 10_000,
+      envelope: TEST_ENVELOPE,
       scheduler: () => () => {},
     });
     q.enqueue(fakeEvent("a"));
@@ -82,6 +91,7 @@ describe("EventQueue", () => {
       http: http as never,
       batchSize: 100,
       intervalMs: 10_000,
+      envelope: TEST_ENVELOPE,
       scheduler: () => () => {},
     });
     const result = await q.flush();
@@ -96,6 +106,7 @@ describe("EventQueue", () => {
       http: http as never,
       batchSize: 100_000, // never auto-flush from batchSize
       intervalMs: 10_000,
+      envelope: TEST_ENVELOPE,
       scheduler: () => () => {},
       onDrop: (n) => {
         droppedNotified += n;
@@ -114,6 +125,7 @@ describe("EventQueue", () => {
       http: http as never,
       batchSize: 100,
       intervalMs: 10_000,
+      envelope: TEST_ENVELOPE,
       scheduler: () => () => {
         cancelled = true;
       },
@@ -130,6 +142,7 @@ describe("EventQueue", () => {
       http: http as never,
       batchSize: 5,
       intervalMs: 10_000,
+      envelope: TEST_ENVELOPE,
       scheduler: () => () => {},
     });
     // Enqueue 5 to trigger a flush, then enqueue more during the in-flight call

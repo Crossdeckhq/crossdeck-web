@@ -18,10 +18,12 @@ function jsonResponse(status: number, body: unknown) {
   });
 }
 
-function newClient(opts: Partial<Parameters<CrossdeckClient["start"]>[0]> = {}) {
+function newClient(opts: Partial<Parameters<CrossdeckClient["init"]>[0]> = {}) {
   const c = new CrossdeckClient();
-  c.start({
+  c.init({
+    appId: "app_web_test",
     publicKey: "cd_pub_test_001",
+    environment: "sandbox",
     storage: new MemoryStorage(),
     autoHeartbeat: false,
     ...opts,
@@ -37,15 +39,63 @@ afterEach(() => {
   globalThis.fetch = ORIG_FETCH;
 });
 
-describe("start", () => {
+describe("init", () => {
   it("rejects an invalid publishable key prefix", () => {
     const c = new CrossdeckClient();
-    expect(() => c.start({ publicKey: "sk_xxxx" as never })).toThrowError(CrossdeckError);
+    expect(() =>
+      c.init({
+        appId: "app_web_test",
+        publicKey: "sk_xxxx" as never,
+        environment: "sandbox",
+      }),
+    ).toThrowError(CrossdeckError);
   });
 
   it("requires a publishable key", () => {
     const c = new CrossdeckClient();
-    expect(() => c.start({ publicKey: "" as never })).toThrowError(CrossdeckError);
+    expect(() =>
+      c.init({
+        appId: "app_web_test",
+        publicKey: "" as never,
+        environment: "sandbox",
+      }),
+    ).toThrowError(CrossdeckError);
+  });
+
+  it("requires appId", () => {
+    const c = new CrossdeckClient();
+    expect(() =>
+      c.init({
+        appId: "" as never,
+        publicKey: "cd_pub_test_001",
+        environment: "sandbox",
+      }),
+    ).toThrowError(CrossdeckError);
+  });
+
+  it("rejects environment mismatch with key prefix", () => {
+    const c = new CrossdeckClient();
+    expect(() =>
+      c.init({
+        appId: "app_web_test",
+        publicKey: "cd_pub_live_xxxx",
+        environment: "sandbox",
+      }),
+    ).toThrowError(CrossdeckError);
+  });
+
+  it("start() still works as a deprecated alias", () => {
+    const c = new CrossdeckClient();
+    expect(() =>
+      c.start({
+        appId: "app_web_test",
+        publicKey: "cd_pub_test_001",
+        environment: "sandbox",
+        storage: new MemoryStorage(),
+        autoHeartbeat: false,
+      }),
+    ).not.toThrow();
+    expect(c.diagnostics().started).toBe(true);
   });
 
   it("auto-heartbeats by default", async () => {
@@ -62,7 +112,12 @@ describe("start", () => {
     );
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
     const c = new CrossdeckClient();
-    c.start({ publicKey: "cd_pub_test_001", storage: new MemoryStorage() });
+    c.init({
+      appId: "app_web_test",
+      publicKey: "cd_pub_test_001",
+      environment: "sandbox",
+      storage: new MemoryStorage(),
+    });
     // Wait microtasks for the fire-and-forget heartbeat.
     await new Promise((r) => setTimeout(r, 0));
     expect(fetchSpy).toHaveBeenCalled();
@@ -79,8 +134,8 @@ describe("start", () => {
   });
 });
 
-describe("requireStarted (calling methods before start)", () => {
-  it("throws not_started on every method when start() not called", async () => {
+describe("requireStarted (calling methods before init)", () => {
+  it("throws not_initialized on every method when init() not called", async () => {
     const c = new CrossdeckClient();
     expect(() => c.isEntitled("pro")).toThrowError(CrossdeckError);
     expect(() => c.track("name")).toThrowError(CrossdeckError);
@@ -196,28 +251,47 @@ describe("getEntitlements + isEntitled", () => {
   });
 });
 
-describe("track + flushEvents", () => {
-  it("queues then sends a batch on flushEvents()", async () => {
+describe("track + flush", () => {
+  it("queues then sends a batch on flush() with the §13.1 envelope", async () => {
     const c = newClient({ eventFlushBatchSize: 100, eventFlushIntervalMs: 100_000 });
     const fetchSpy = vi
       .fn()
       .mockResolvedValue(
-        jsonResponse(202, { object: "list", received: 2, env: "production" }),
+        jsonResponse(202, { object: "list", received: 2, env: "sandbox" }),
       );
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
 
     c.track("first");
     c.track("second", { ctaName: "trial" });
     expect(fetchSpy).toHaveBeenCalledTimes(0); // still queued
-    await c.flushEvents();
+    await c.flush();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const body = JSON.parse(fetchSpy.mock.calls[0]![1].body as string);
+    // Batch envelope (NorthStar §13.1)
+    expect(body.appId).toBe("app_web_test");
+    expect(body.environment).toBe("sandbox");
+    expect(body.sdk?.name).toBe("@cross-deck/web");
+    expect(typeof body.sdk?.version).toBe("string");
+    // Events
     expect(body.events.length).toBe(2);
     expect(body.events[0].name).toBe("first");
     expect(body.events[1].name).toBe("second");
-    expect(body.events[1].properties).toEqual({ ctaName: "trial" });
-    // Each event carries the anonymous identity hint
+    expect(body.events[1].properties).toEqual(
+      expect.objectContaining({ ctaName: "trial" }),
+    );
     expect(body.events[0].anonymousId).toMatch(/^anon_/);
+  });
+
+  it("flushEvents() still works as a deprecated alias", async () => {
+    const c = newClient({ eventFlushBatchSize: 100, eventFlushIntervalMs: 100_000 });
+    const fetchSpy = vi.fn().mockResolvedValue(
+      jsonResponse(202, { object: "list", received: 1, env: "sandbox" }),
+    );
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    c.track("legacy");
+    await c.flushEvents();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it("track with empty name throws synchronously", () => {
@@ -229,11 +303,11 @@ describe("track + flushEvents", () => {
     const c = newClient({ eventFlushBatchSize: 100, eventFlushIntervalMs: 100_000 });
     const fetchSpy = vi
       .fn()
-      .mockResolvedValue(jsonResponse(202, { object: "list", received: 5, env: "production" }));
+      .mockResolvedValue(jsonResponse(202, { object: "list", received: 5, env: "sandbox" }));
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
 
     for (let i = 0; i < 5; i++) c.track(`e${i}`);
-    await c.flushEvents();
+    await c.flush();
     const body = JSON.parse(fetchSpy.mock.calls[0]![1].body as string) as { events: { eventId: string }[] };
     const ids = new Set(body.events.map((e) => e.eventId));
     expect(ids.size).toBe(5);
@@ -271,14 +345,14 @@ describe("reset", () => {
   });
 });
 
-describe("purchaseApple", () => {
-  it("forwards signedTransactionInfo and updates cache from response", async () => {
+describe("syncPurchases", () => {
+  it("posts to /purchases/sync with rail+signedTransactionInfo and updates cache", async () => {
     const c = newClient();
     const fetchSpy = vi.fn().mockResolvedValue(
       jsonResponse(200, {
         object: "purchase_result",
         crossdeckCustomerId: "cdcust_purchase_001",
-        env: "production",
+        env: "sandbox",
         entitlements: [
           {
             object: "entitlement",
@@ -293,10 +367,12 @@ describe("purchaseApple", () => {
     );
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
 
-    const result = await c.purchaseApple({ signedTransactionInfo: "eyJ.test.sig" });
+    const result = await c.syncPurchases({ signedTransactionInfo: "eyJ.test.sig" });
     expect(result.crossdeckCustomerId).toBe("cdcust_purchase_001");
     expect(c.isEntitled("pro")).toBe(true);
 
+    const [url] = fetchSpy.mock.calls[0]!;
+    expect(url).toContain("/purchases/sync");
     const body = JSON.parse(fetchSpy.mock.calls[0]![1].body as string);
     expect(body.rail).toBe("apple");
     expect(body.signedTransactionInfo).toBe("eyJ.test.sig");
@@ -304,7 +380,52 @@ describe("purchaseApple", () => {
 
   it("rejects empty signedTransactionInfo", async () => {
     const c = newClient();
-    await expect(c.purchaseApple({ signedTransactionInfo: "" })).rejects.toThrow(CrossdeckError);
+    await expect(c.syncPurchases({ signedTransactionInfo: "" })).rejects.toThrow(CrossdeckError);
+  });
+
+  it("purchaseApple() still works as a deprecated alias", async () => {
+    const c = newClient();
+    const fetchSpy = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        object: "purchase_result",
+        crossdeckCustomerId: "cdcust_legacy",
+        env: "sandbox",
+        entitlements: [],
+      }),
+    );
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    const r = await c.purchaseApple({ signedTransactionInfo: "eyJ.test" });
+    expect(r.crossdeckCustomerId).toBe("cdcust_legacy");
+    const [url] = fetchSpy.mock.calls[0]!;
+    expect(url).toContain("/purchases/sync");
+  });
+});
+
+describe("setDebugMode + sensitive-property warnings", () => {
+  it("does not log signals when debug is off", () => {
+    const c = newClient();
+    const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    c.track("evt", { email: "user@example.com" });
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("warns on sensitive property names when debug is on", () => {
+    const c = newClient({ debug: true });
+    const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    c.track("evt", { email: "user@example.com", password: "x" });
+    const calls = spy.mock.calls.map((args) => String(args[0]));
+    expect(calls.some((c) => c.includes("sdk.sensitive_property_warning"))).toBe(true);
+    spy.mockRestore();
+  });
+
+  it("setDebugMode(true) emits the configured signal", () => {
+    const c = newClient();
+    const spy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    c.setDebugMode(true);
+    const calls = spy.mock.calls.map((args) => String(args[0]));
+    expect(calls.some((c) => c.includes("sdk.configured"))).toBe(true);
+    spy.mockRestore();
   });
 });
 
