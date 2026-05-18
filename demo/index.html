@@ -1,0 +1,551 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>@cross-deck/web — Smoke Test</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --panel: #131313;
+    --panel-2: #1a1a1a;
+    --border: #262626;
+    --text: #f5f5f5;
+    --text-dim: #a3a3a3;
+    --text-muted: #525252;
+    --accent: #ee4f25;
+    --ok: #22c55e;
+    --warn: #f59e0b;
+    --err: #ef4444;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+  header {
+    border-bottom: 1px solid var(--border);
+    padding: 16px 20px;
+    background: var(--panel);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  header h1 {
+    margin: 0 0 4px 0;
+    font-size: 16px;
+    font-weight: 600;
+  }
+  header h1 small {
+    color: var(--text-muted);
+    font-weight: 400;
+    margin-left: 8px;
+  }
+  header p {
+    margin: 0;
+    color: var(--text-dim);
+    font-size: 12px;
+  }
+  main {
+    display: grid;
+    grid-template-columns: 1fr 480px;
+    gap: 0;
+    min-height: calc(100vh - 64px);
+  }
+  .actions {
+    padding: 20px;
+    overflow-y: auto;
+  }
+  .sidebar {
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+  }
+  section.card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 12px;
+  }
+  section.card > h2 {
+    margin: 0;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: 0.01em;
+  }
+  section.card > h2 small {
+    color: var(--text-muted);
+    font-weight: 400;
+    margin-left: 8px;
+    font-size: 11px;
+  }
+  .card-body {
+    padding: 12px 14px;
+  }
+  .row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .row:last-child {
+    margin-bottom: 0;
+  }
+  button {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 12px;
+    font-size: 12.5px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background 0.1s, border-color 0.1s;
+  }
+  button:hover {
+    background: #222;
+    border-color: #333;
+  }
+  button:active {
+    background: #1a1a1a;
+  }
+  button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  button.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  button.primary:hover {
+    background: #d94518;
+  }
+  input[type="text"], input[type="url"], select {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 12.5px;
+    font-family: inherit;
+    flex: 1;
+    min-width: 0;
+  }
+  input:focus, select:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+    font-weight: 500;
+  }
+  label span.req {
+    color: var(--err);
+  }
+  .hint {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    margin: 4px 0 0 0;
+    line-height: 1.4;
+  }
+  .hint code {
+    background: var(--panel-2);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  .status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-family: var(--mono);
+    color: var(--text-muted);
+    margin-left: auto;
+  }
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-muted);
+  }
+  .status-dot.is-ok { background: var(--ok); box-shadow: 0 0 8px rgba(34, 197, 94, 0.5); }
+  .status-dot.is-err { background: var(--err); }
+  .status-dot.is-warn { background: var(--warn); }
+  .sidebar-header {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .sidebar-header h2 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .sidebar-tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar-tab {
+    flex: 1;
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    padding: 10px 12px;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .sidebar-tab.is-active {
+    color: var(--text);
+    border-bottom-color: var(--accent);
+  }
+  .sidebar-pane {
+    flex: 1;
+    overflow-y: auto;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 1.5;
+  }
+  .sidebar-pane[hidden] {
+    display: none;
+  }
+  #diagnostics-pane {
+    padding: 12px 16px;
+  }
+  #diagnostics-pane pre {
+    margin: 0;
+    color: var(--text-dim);
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  #log-pane {
+    padding: 0;
+  }
+  .log-line {
+    padding: 4px 16px;
+    border-bottom: 1px solid #1a1a1a;
+    color: var(--text-dim);
+    word-break: break-word;
+  }
+  .log-line .log-time {
+    color: var(--text-muted);
+    font-size: 10.5px;
+    margin-right: 8px;
+  }
+  .log-line.log-info .log-msg { color: var(--text-dim); }
+  .log-line.log-ok .log-msg { color: var(--ok); }
+  .log-line.log-warn .log-msg { color: var(--warn); }
+  .log-line.log-err .log-msg { color: var(--err); }
+  #network-pane {
+    padding: 0;
+  }
+  .net-row {
+    padding: 6px 16px;
+    border-bottom: 1px solid #1a1a1a;
+    display: grid;
+    grid-template-columns: 50px 1fr 60px;
+    gap: 8px;
+    font-size: 11px;
+  }
+  .net-row.net-ok .net-status { color: var(--ok); }
+  .net-row.net-err .net-status { color: var(--err); }
+  .net-method { color: var(--text-muted); }
+  .net-path { color: var(--text-dim); word-break: break-all; }
+  .net-status { font-weight: 600; text-align: right; }
+  .empty {
+    padding: 24px 16px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+  .checklist {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  .checklist li {
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12.5px;
+  }
+  .checklist li:last-child {
+    border-bottom: none;
+  }
+  .checklist .check {
+    width: 18px;
+    height: 18px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    background: var(--panel-2);
+  }
+  .checklist .check.is-done {
+    background: var(--ok);
+    border-color: var(--ok);
+    color: #000;
+  }
+  .checklist .check.is-fail {
+    background: var(--err);
+    border-color: var(--err);
+    color: #fff;
+  }
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  @media (max-width: 1100px) {
+    main { grid-template-columns: 1fr; }
+    .sidebar { border-left: none; border-top: 1px solid var(--border); }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>@cross-deck/web — Smoke Test
+    <small>built from <code>dist/crossdeck.umd.min.js</code></small>
+  </h1>
+  <p>Real browser, real built artefact. Open DevTools (Network + Application → Local Storage) and click through. Every action emits a log line + updates the diagnostics panel.</p>
+</header>
+<main>
+  <div class="actions">
+    <!-- ============ CONFIG + INIT ============ -->
+    <section class="card">
+      <h2>1. Configure + initialise
+        <small>Once. Wires every API to a real backend.</small>
+      </h2>
+      <div class="card-body">
+        <label>App ID <span class="req">*</span></label>
+        <div class="row">
+          <input id="cfg-appId" type="text" placeholder="app_web_xxxxxxxxxxxx" />
+        </div>
+        <label>Publishable key <span class="req">*</span></label>
+        <div class="row">
+          <input id="cfg-key" type="text" placeholder="cd_pub_test_… or cd_pub_live_…" />
+        </div>
+        <label>Environment</label>
+        <div class="row">
+          <select id="cfg-env">
+            <option value="sandbox">sandbox</option>
+            <option value="production">production</option>
+          </select>
+          <select id="cfg-base">
+            <option value="https://api.cross-deck.com/v1">api.cross-deck.com/v1 (live)</option>
+            <option value="http://localhost:5001/crossdeck-47d8f/us-east4/v1">localhost emulator</option>
+          </select>
+        </div>
+        <p class="hint">
+          Localhost detection auto-routes everything to a no-op when the page is served from <code>localhost</code> or <code>file://</code>. To exercise the real backend, host this file under a real domain OR override below and uncheck dev mode in DevTools.
+        </p>
+        <div class="row">
+          <button id="btn-init" class="primary">Crossdeck.init()</button>
+          <button id="btn-warm">Crossdeck.getEntitlements()</button>
+          <span class="status"><span id="sdk-status-dot" class="status-dot"></span><span id="sdk-status">not initialised</span></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ IDENTIFY + TRAITS ============ -->
+    <section class="card">
+      <h2>2. Identity
+        <small>identify() with traits, register, group, reset</small>
+      </h2>
+      <div class="card-body">
+        <label>User ID</label>
+        <div class="row">
+          <input id="id-userId" type="text" value="dogfood_user_001" />
+        </div>
+        <label>Traits (JSON)</label>
+        <div class="row">
+          <input id="id-traits" type="text" value='{"name":"Dogfood","plan":"pro","signedUpAt":"2026-05-11"}' />
+        </div>
+        <div class="row">
+          <button id="btn-identify">identify(userId, { email, traits })</button>
+          <button id="btn-reset">reset()</button>
+        </div>
+        <label>Super properties (JSON)</label>
+        <div class="row">
+          <input id="id-super" type="text" value='{"releaseChannel":"beta","feature":"experimental"}' />
+          <button id="btn-register">register()</button>
+          <button id="btn-unregister">unregister("releaseChannel")</button>
+        </div>
+        <label>Group</label>
+        <div class="row">
+          <input id="grp-type" type="text" value="org" style="max-width:80px;" />
+          <input id="grp-id" type="text" value="acme_inc" />
+          <button id="btn-group">group()</button>
+          <button id="btn-ungroup">group(type, null)</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ TRACK / FLUSH ============ -->
+    <section class="card">
+      <h2>3. Track events
+        <small>Validates property sanitisation + idempotency-key + retry</small>
+      </h2>
+      <div class="card-body">
+        <div class="row">
+          <button id="btn-track-simple">track("paywall_viewed", { variant: "v3" })</button>
+          <button id="btn-track-poison">track() with poison properties</button>
+        </div>
+        <p class="hint">
+          Poison properties = function, BigInt, Date, circular ref, huge string, NaN. The SDK should sanitise all of these and ship a clean event.
+        </p>
+        <div class="row">
+          <button id="btn-track-burst">Burst: 25 events</button>
+          <button id="btn-flush">flush()</button>
+        </div>
+        <p class="hint">
+          Burst exceeds batchSize (default 20) → should trigger an immediate flush. Watch the Network tab for the <code>/v1/events</code> POST carrying <code>Idempotency-Key: batch_…</code>.
+        </p>
+        <div class="row">
+          <button id="btn-track-pii">track() with email + card in URL</button>
+        </div>
+        <p class="hint">
+          PII scrub should replace <code>user@example.com</code> → <code>[email]</code> and the card number → <code>[card]</code> before the event leaves.
+        </p>
+      </div>
+    </section>
+
+    <!-- ============ CONSENT + FORGET ============ -->
+    <section class="card">
+      <h2>4. Privacy + consent
+        <small>Wave 3 gates: consent() and forget()</small>
+      </h2>
+      <div class="card-body">
+        <div class="row">
+          <button id="btn-consent-deny">consent({ analytics: false })</button>
+          <button id="btn-consent-allow">consent({ analytics: true })</button>
+          <button id="btn-consent-marketing-off">consent({ marketing: false })</button>
+        </div>
+        <p class="hint">
+          After denying analytics, click <em>track</em> above — Network tab should show NO outgoing POST. Re-enable, track again — POST appears.
+        </p>
+        <div class="row">
+          <button id="btn-forget" style="color:var(--err);border-color:#5a1a1a;">forget()</button>
+        </div>
+        <p class="hint">
+          GDPR right to be forgotten. Posts to <code>/v1/identity/forget</code> then wipes all local state.
+        </p>
+      </div>
+    </section>
+
+    <!-- ============ DURABILITY ============ -->
+    <section class="card">
+      <h2>5. Durability + retry
+        <small>Wave 1 plumbing: queue survives crashes + backs off on failure</small>
+      </h2>
+      <div class="card-body">
+        <div class="row">
+          <button id="btn-stuff-queue">Queue 5 events (no flush)</button>
+          <button id="btn-inspect-storage">Inspect localStorage queue</button>
+        </div>
+        <p class="hint">
+          After queueing, look at DevTools → Application → Local Storage → <code>crossdeck:queue.v1</code>. Close the tab, reopen the demo — those 5 events should rehydrate and flush.
+        </p>
+        <div class="row">
+          <button id="btn-simulate-offline">Simulate offline + retry</button>
+        </div>
+        <p class="hint">
+          Forces fetch failures for 10s, queues 3 events, then restores. Watch diagnostics for <code>consecutiveFailures</code> climbing and <code>nextRetryAt</code> being scheduled.
+        </p>
+      </div>
+    </section>
+
+    <!-- ============ ENTITLEMENTS ============ -->
+    <section class="card">
+      <h2>6. Entitlements
+        <small>Cache read + reactive listener</small>
+      </h2>
+      <div class="card-body">
+        <label>Entitlement key</label>
+        <div class="row">
+          <input id="ent-key" type="text" value="pro" style="max-width:200px;" />
+          <button id="btn-is-entitled">isEntitled(key)</button>
+          <button id="btn-list-ents">listEntitlements()</button>
+        </div>
+        <p class="hint">
+          Result appears in the log. Subscribing fires on every cache mutation.
+        </p>
+      </div>
+    </section>
+
+    <!-- ============ AUTOMATED CHECKLIST ============ -->
+    <section class="card">
+      <h2>7. One-shot smoke checklist
+        <small>Runs the full pyramid in ~30 seconds</small>
+      </h2>
+      <div class="card-body">
+        <div class="row">
+          <button id="btn-run-checklist" class="primary">Run full smoke test</button>
+        </div>
+        <ol class="checklist" id="checklist">
+          <li><span class="check" data-step="boot">·</span><span>Boot the SDK + heartbeat</span></li>
+          <li><span class="check" data-step="identify">·</span><span>identify() with traits</span></li>
+          <li><span class="check" data-step="register">·</span><span>register() super properties</span></li>
+          <li><span class="check" data-step="group">·</span><span>group() org membership</span></li>
+          <li><span class="check" data-step="track">·</span><span>track() → event reaches backend</span></li>
+          <li><span class="check" data-step="idem">·</span><span>Idempotency-Key on request</span></li>
+          <li><span class="check" data-step="durable">·</span><span>Durable queue persists to localStorage</span></li>
+          <li><span class="check" data-step="consent">·</span><span>consent({analytics:false}) drops events</span></li>
+          <li><span class="check" data-step="scrub">·</span><span>PII scrubbed in property strings</span></li>
+          <li><span class="check" data-step="diag">·</span><span>diagnostics() shape complete</span></li>
+        </ol>
+      </div>
+    </section>
+  </div>
+
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="sidebar">
+    <div class="sidebar-tabs">
+      <button class="sidebar-tab is-active" data-pane="diagnostics-pane">Diagnostics</button>
+      <button class="sidebar-tab" data-pane="network-pane">Network</button>
+      <button class="sidebar-tab" data-pane="log-pane">Log</button>
+    </div>
+    <div id="diagnostics-pane" class="sidebar-pane">
+      <pre id="diag-output">Crossdeck.diagnostics() will populate here once init() runs.</pre>
+    </div>
+    <div id="network-pane" class="sidebar-pane" hidden>
+      <div class="empty">Network requests will appear here.</div>
+    </div>
+    <div id="log-pane" class="sidebar-pane" hidden>
+      <div class="empty">Action log will appear here.</div>
+    </div>
+  </aside>
+</main>
+
+<!-- Load the BUILT SDK — the same artefact npm publish would ship. -->
+<script src="../dist/crossdeck.umd.min.js"></script>
+<script src="./smoke.js"></script>
+</body>
+</html>

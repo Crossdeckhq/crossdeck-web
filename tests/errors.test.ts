@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { CrossdeckError, crossdeckErrorFromResponse } from "../src/errors";
+import {
+  CrossdeckError,
+  crossdeckErrorFromResponse,
+  parseRetryAfterHeader,
+} from "../src/errors";
 
 describe("CrossdeckError", () => {
   it("preserves all payload fields", () => {
@@ -121,5 +125,60 @@ describe("crossdeckErrorFromResponse", () => {
     const err = await crossdeckErrorFromResponse(broken);
     expect(err.type).toBe("internal_error");
     expect(err.code).toBe("http_500");
+  });
+
+  it("parses Retry-After (delta-seconds) onto retryAfterMs", async () => {
+    const res = fakeResponse(429, null, { "Retry-After": "45" });
+    const err = await crossdeckErrorFromResponse(res);
+    expect(err.retryAfterMs).toBe(45_000);
+  });
+
+  it("parses Retry-After (HTTP-date) onto retryAfterMs", async () => {
+    const future = new Date(Date.now() + 10_000).toUTCString();
+    const res = fakeResponse(503, null, { "Retry-After": future });
+    const err = await crossdeckErrorFromResponse(res);
+    expect(err.retryAfterMs).toBeGreaterThan(8_000);
+    expect(err.retryAfterMs).toBeLessThanOrEqual(10_000);
+  });
+
+  it("retryAfterMs is undefined when header is absent", async () => {
+    const res = fakeResponse(429, null);
+    const err = await crossdeckErrorFromResponse(res);
+    expect(err.retryAfterMs).toBeUndefined();
+  });
+});
+
+describe("parseRetryAfterHeader", () => {
+  it("returns undefined for null / empty", () => {
+    expect(parseRetryAfterHeader(null)).toBeUndefined();
+    expect(parseRetryAfterHeader("")).toBeUndefined();
+    expect(parseRetryAfterHeader("   ")).toBeUndefined();
+  });
+
+  it("parses delta-seconds (integer)", () => {
+    expect(parseRetryAfterHeader("0")).toBe(0);
+    expect(parseRetryAfterHeader("1")).toBe(1000);
+    expect(parseRetryAfterHeader("120")).toBe(120_000);
+  });
+
+  it("parses delta-seconds (decimal)", () => {
+    expect(parseRetryAfterHeader("1.5")).toBe(1500);
+  });
+
+  it("parses HTTP-date", () => {
+    const future = new Date(Date.now() + 5_000).toUTCString();
+    const ms = parseRetryAfterHeader(future);
+    expect(ms).toBeGreaterThan(3_000);
+    expect(ms).toBeLessThanOrEqual(5_000);
+  });
+
+  it("clamps past HTTP-date to 0", () => {
+    const past = new Date(Date.now() - 10_000).toUTCString();
+    expect(parseRetryAfterHeader(past)).toBe(0);
+  });
+
+  it("returns undefined for malformed input", () => {
+    expect(parseRetryAfterHeader("nonsense")).toBeUndefined();
+    expect(parseRetryAfterHeader("-5")).toBeUndefined();
   });
 });

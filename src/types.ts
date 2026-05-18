@@ -150,6 +150,23 @@ export interface CrossdeckOptions {
    * `Crossdeck.setDebugMode(true)` after init.
    */
   debug?: boolean;
+  /**
+   * Respect the browser's Do Not Track signal at init (v0.10.0+).
+   * Default `false`. When `true` AND the user has `navigator.doNotTrack === "1"`,
+   * the SDK boots with analytics / marketing / errors all denied —
+   * locked off even if the developer later calls `Crossdeck.consent({...})`.
+   * Industry has effectively deprecated DNT, but opt-in support is the
+   * polite default for privacy-first apps.
+   */
+  respectDnt?: boolean;
+  /**
+   * Scrub PII-shaped strings (email addresses, card numbers) from
+   * URL paths, event properties, and acquisition referrer before they
+   * leave the SDK. Default `true` — Stripe-grade. Disable only if your
+   * pipeline does its own PII redaction downstream and you need the
+   * raw strings.
+   */
+  scrubPii?: boolean;
 }
 
 /** Auto-tracking flags. See CrossdeckOptions.autoTrack. */
@@ -160,6 +177,34 @@ export interface AutoTrackOptions {
   pageViews: boolean;
   /** Auto-attach os/browser/locale/screen/etc to every event's `properties`. Default true (browser only). */
   deviceInfo: boolean;
+  /**
+   * Click autocapture — fire `element.clicked` for every interactive
+   * click on the page. Default true. Mixpanel/Amplitude pattern. Powers
+   * Crossdeck's funnel-attribution USP ("clicked X then converted").
+   * Privacy: skips form inputs / password fields / [class~="cd-noTrack"]
+   * subtrees. Override on individual elements with data-cd-event="custom"
+   * or data-cd-prop-* for custom property tagging.
+   */
+  clicks: boolean;
+  /**
+   * Web Vitals capture (v0.9.0+) — emits `webvitals.lcp`, `webvitals.inp`,
+   * `webvitals.cls`, `webvitals.fcp`, `webvitals.ttfb` events using the
+   * browser's `PerformanceObserver`. Defaults to true in browsers,
+   * no-op everywhere else. Disable if you have a separate RUM provider
+   * (DataDog, Sentry Performance) and don't want duplicates.
+   */
+  webVitals: boolean;
+  /**
+   * Error capture (v1.0.0+) — installs window.onerror +
+   * window.onunhandledrejection listeners, wraps fetch + XHR to catch
+   * 5xx + network failures, ships each captured error as a Crossdeck
+   * event (kind: error.unhandled / error.unhandledrejection /
+   * error.handled / error.http / error.message). Errors gate on
+   * `consent.errors`. Rate-limited per-fingerprint so a runaway loop
+   * can't flood the queue; browser-extension noise filtered by
+   * default. Default true in browsers, no-op everywhere else.
+   */
+  errors: boolean;
 }
 
 /** Minimal interface for any pluggable key-value persistence. */
@@ -169,10 +214,45 @@ export interface KeyValueStorage {
   removeItem(key: string): void;
 }
 
-/** Identity hint object passed to identify() — at least one field required. */
+/**
+ * Identity hint + profile traits passed to identify().
+ *
+ * `traits` is a free-form bag of profile data (name, plan, signupDate,
+ * teamRole, etc.) that gets persisted on the Crossdeck customer record
+ * and attached to every subsequent event of the identified user as
+ * `$user.<key>` properties for dashboard filtering.
+ *
+ * Like event properties, traits are validated at the SDK boundary —
+ * functions/symbols/undefined dropped, Date / BigInt / Error coerced,
+ * strings > 1024 chars truncated. Caller's object is never mutated.
+ */
 export interface IdentifyOptions {
   /** Optional email to attach to the customer record. */
   email?: string;
+  /**
+   * Optional profile traits. Examples:
+   *   `{ name: "Wes", plan: "pro", signedUpAt: "2026-05-11" }`
+   *
+   * Treated like event properties — values are sanitised at the SDK
+   * boundary so a `{ avatar: <File>, callback: () => {} }` payload
+   * doesn't crash the alias request. Server-side, traits land on
+   * `customers/{cdcust}.traits` (additively — existing fields are
+   * preserved unless the new identify call overrides them).
+   */
+  traits?: Record<string, unknown>;
+}
+
+/**
+ * Group context — Mixpanel-style. Identifies a customer's membership
+ * in an organisational entity (org, account, team, workspace) so B2B
+ * dashboards can answer "how is account X using my product".
+ *
+ * Attached to every event as `$groups.<type>` until cleared via
+ * `Crossdeck.group(type, null)`. Multiple types can coexist (e.g.
+ * `org` + `team`) — the SDK keeps a map keyed by type.
+ */
+export interface GroupTraits {
+  [key: string]: unknown;
 }
 
 /** Properties payload for track(). Arbitrary key/value, JSON-serialisable, ≤ 8 KB. */
@@ -191,9 +271,42 @@ export interface Diagnostics {
   developerUserId: string | null;
   sdkVersion: string | null;
   baseUrl: string | null;
+  /**
+   * Last `serverTime` value the SDK saw on a /sdk/heartbeat response,
+   * along with the local clock value AT that moment. Lets dashboards
+   * (and the developer, in debug mode) detect a wrong-system-clock
+   * problem before it corrupts a day of analytics. Null until the
+   * first heartbeat completes.
+   */
+  clock: {
+    /** Server's view of "now" from the last heartbeat (epoch ms). */
+    lastServerTime: number | null;
+    /** Client's `Date.now()` taken at the same moment as `lastServerTime`. */
+    lastClientTime: number | null;
+    /**
+     * `lastClientTime - lastServerTime` — positive means the client
+     * clock is AHEAD of the server. Outside ±5 minutes is suspicious
+     * and worth surfacing to the developer.
+     */
+    skewMs: number | null;
+  };
   entitlements: {
     count: number;
     lastUpdated: number;
+    /**
+     * True when the durable cache is knowingly serving older-than-
+     * trustworthy data — the last refresh attempt failed (Crossdeck
+     * unreachable) or last-known-good has aged past the staleness
+     * window. The cache still serves last-known-good; this makes the
+     * staleness observable instead of a silent unbounded window.
+     */
+    stale: boolean;
+    /**
+     * Cumulative count of listener invocations that threw. Swallowed
+     * inside the cache (a buggy consumer must not crash the SDK) but
+     * surfaced here so developers can spot broken subscribers.
+     */
+    listenerErrors: number;
   };
   events: {
     buffered: number;
@@ -201,5 +314,12 @@ export interface Diagnostics {
     inFlight: number;
     lastFlushAt: number;
     lastError: string | null;
+    /** Consecutive flush failures since the last success. */
+    consecutiveFailures: number;
+    /**
+     * When the next retry is scheduled (epoch ms), or null if the queue
+     * is idle / healthy.
+     */
+    nextRetryAt: number | null;
   };
 }

@@ -144,4 +144,118 @@ describe("HttpClient", () => {
       expect((err as CrossdeckError).code).toBe("invalid_json_response");
     }
   });
+
+  // ----- Wave 1: abort timeout + idempotency key -----
+
+  it("attaches Idempotency-Key header when options.idempotencyKey is set", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(202, { received: 1 }));
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    await client().request("POST", "/events", {
+      body: { events: [] },
+      idempotencyKey: "batch_abc123",
+    });
+
+    const [, init] = fetchSpy.mock.calls[0]!;
+    expect(init.headers["Idempotency-Key"]).toBe("batch_abc123");
+  });
+
+  it("omits Idempotency-Key when not supplied", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(200, {}));
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    await client().request("GET", "/entitlements");
+    const [, init] = fetchSpy.mock.calls[0]!;
+    expect(init.headers["Idempotency-Key"]).toBeUndefined();
+  });
+
+  it("aborts the fetch after timeoutMs and surfaces request_timeout", async () => {
+    // Mock fetch that respects the abort signal — resolves only when not aborted.
+    globalThis.fetch = vi.fn().mockImplementation((_url, init) => {
+      return new Promise((_resolve, reject) => {
+        const signal = (init as RequestInit).signal as AbortSignal;
+        signal.addEventListener("abort", () => {
+          reject(new DOMException("aborted", "AbortError"));
+        });
+      });
+    }) as unknown as typeof fetch;
+
+    const c = new HttpClient({
+      publicKey: "cd_pub_test_001",
+      baseUrl: DEFAULT_BASE_URL,
+      sdkVersion: "0.1.0-test",
+      timeoutMs: 50,
+    });
+
+    try {
+      await c.request("GET", "/entitlements");
+      expect.fail("expected timeout throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(CrossdeckError);
+      expect((err as CrossdeckError).type).toBe("network_error");
+      expect((err as CrossdeckError).code).toBe("request_timeout");
+    }
+  });
+
+  it("per-call timeoutMs overrides client default", async () => {
+    globalThis.fetch = vi.fn().mockImplementation((_url, init) => {
+      return new Promise((_resolve, reject) => {
+        (init as RequestInit).signal?.addEventListener("abort", () =>
+          reject(new DOMException("aborted", "AbortError")),
+        );
+      });
+    }) as unknown as typeof fetch;
+
+    const c = new HttpClient({
+      publicKey: "cd_pub_test_001",
+      baseUrl: DEFAULT_BASE_URL,
+      sdkVersion: "0.1.0-test",
+      timeoutMs: 10_000, // would never fire in test time
+    });
+
+    const start = Date.now();
+    try {
+      await c.request("GET", "/entitlements", { timeoutMs: 30 });
+      expect.fail("expected timeout throw");
+    } catch (err) {
+      expect(Date.now() - start).toBeLessThan(500);
+      expect((err as CrossdeckError).code).toBe("request_timeout");
+    }
+  });
+
+  it("timeoutMs: 0 disables the timeout (resolves normally)", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(200, { ok: true }));
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    const result = await client().request("GET", "/entitlements", { timeoutMs: 0 });
+    expect(result).toEqual({ ok: true });
+    // No abort signal should have been attached.
+    const [, init] = fetchSpy.mock.calls[0]!;
+    expect((init as RequestInit).signal).toBeUndefined();
+  });
+
+  it("exposes Retry-After header (delta-seconds) on 429 errors", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: { type: "rate_limit_error", code: "rate_limited", message: "slow" },
+        }),
+        {
+          status: 429,
+          headers: {
+            "Content-Type": "application/json",
+            "Retry-After": "30",
+          },
+        },
+      ),
+    ) as unknown as typeof fetch;
+
+    try {
+      await client().request("GET", "/entitlements");
+      expect.fail("expected throw");
+    } catch (err) {
+      expect((err as CrossdeckError).type).toBe("rate_limit_error");
+      expect((err as CrossdeckError).retryAfterMs).toBe(30_000);
+    }
+  });
 });

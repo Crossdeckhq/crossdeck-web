@@ -127,6 +127,21 @@ describe("EntitlementCache", () => {
       expect(calls).toEqual(["second listener fired"]);
     });
 
+    it("counts listener errors via the listenerErrors getter", () => {
+      const c = new EntitlementCache();
+      expect(c.listenerErrors).toBe(0);
+      c.subscribe(() => {
+        throw new Error("buggy consumer");
+      });
+      c.subscribe(() => {
+        throw new Error("also buggy");
+      });
+      c.setFromList([ent("pro")]);
+      c.setFromList([ent("pro"), ent("ai")]);
+      // 2 listeners x 2 fires = 4 throws, all counted.
+      expect(c.listenerErrors).toBe(4);
+    });
+
     it("a listener that unsubscribes itself during dispatch is safe", () => {
       const c = new EntitlementCache();
       const calls: string[] = [];

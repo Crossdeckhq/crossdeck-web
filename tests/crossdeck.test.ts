@@ -429,6 +429,443 @@ describe("setDebugMode + sensitive-property warnings", () => {
   });
 });
 
+describe("identify(userId, { traits }) — v0.9.0+", () => {
+  it("sends traits in the alias body when provided", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        object: "alias_result",
+        crossdeckCustomerId: "cdcust_x",
+        linked: [],
+        mergePending: false,
+        env: "sandbox",
+      }),
+    );
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    const c = newClient();
+    await c.identify("user_847", {
+      email: "wes@pinet.co.za",
+      traits: { name: "Wes", plan: "pro" },
+    });
+    const aliasCall = fetchSpy.mock.calls.find(([url]) =>
+      String(url).includes("/identity/alias"),
+    );
+    expect(aliasCall).toBeDefined();
+    const body = JSON.parse((aliasCall![1] as RequestInit).body as string);
+    expect(body.userId).toBe("user_847");
+    expect(body.email).toBe("wes@pinet.co.za");
+    expect(body.traits).toEqual({ name: "Wes", plan: "pro" });
+  });
+
+  it("omits traits when an empty object is supplied", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        object: "alias_result",
+        crossdeckCustomerId: "cdcust_x",
+        linked: [],
+        mergePending: false,
+        env: "sandbox",
+      }),
+    );
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    const c = newClient();
+    await c.identify("user_847", { traits: {} });
+    const aliasCall = fetchSpy.mock.calls.find(([url]) =>
+      String(url).includes("/identity/alias"),
+    );
+    const body = JSON.parse((aliasCall![1] as RequestInit).body as string);
+    expect(body.traits).toBeUndefined();
+  });
+
+  it("sanitises traits — functions / BigInt coerced or dropped", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        object: "alias_result",
+        crossdeckCustomerId: "cdcust_x",
+        linked: [],
+        mergePending: false,
+        env: "sandbox",
+      }),
+    );
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    const c = newClient();
+    await c.identify("user_847", {
+      traits: {
+        plan: "pro",
+        save: () => 0, // dropped
+        bigNumber: 1n, // coerced to string
+      },
+    });
+    const aliasCall = fetchSpy.mock.calls.find(([url]) =>
+      String(url).includes("/identity/alias"),
+    );
+    const body = JSON.parse((aliasCall![1] as RequestInit).body as string);
+    expect(body.traits.plan).toBe("pro");
+    expect(body.traits.save).toBeUndefined();
+    expect(body.traits.bigNumber).toBe("1");
+  });
+});
+
+describe("register / unregister / group", () => {
+  it("register() attaches super-properties to every subsequent event", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(202, { object: "list", received: 1, env: "sandbox" }));
+
+    const c = newClient();
+    c.register({ plan: "pro", releaseChannel: "beta" });
+    c.track("paywall_shown");
+    await c.flush();
+    const eventsCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(([url]) =>
+      String(url).includes("/events"),
+    );
+    const body = JSON.parse((eventsCall![1] as RequestInit).body as string);
+    expect(body.events[0].properties.plan).toBe("pro");
+    expect(body.events[0].properties.releaseChannel).toBe("beta");
+  });
+
+  it("unregister() removes a super-property", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(202, { object: "list", received: 1, env: "sandbox" }));
+
+    const c = newClient();
+    c.register({ plan: "pro" });
+    c.unregister("plan");
+    c.track("paywall_shown");
+    await c.flush();
+    const eventsCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(([url]) =>
+      String(url).includes("/events"),
+    );
+    const body = JSON.parse((eventsCall![1] as RequestInit).body as string);
+    expect(body.events[0].properties.plan).toBeUndefined();
+  });
+
+  it("caller-supplied properties override super-properties", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(202, { object: "list", received: 1, env: "sandbox" }));
+
+    const c = newClient();
+    c.register({ plan: "pro" });
+    c.track("paywall_shown", { plan: "enterprise" });
+    await c.flush();
+    const eventsCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(([url]) =>
+      String(url).includes("/events"),
+    );
+    const body = JSON.parse((eventsCall![1] as RequestInit).body as string);
+    expect(body.events[0].properties.plan).toBe("enterprise");
+  });
+
+  it("group() attaches $groups.<type>: id to every event", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(202, { object: "list", received: 1, env: "sandbox" }));
+
+    const c = newClient();
+    c.group("org", "acme_inc");
+    c.group("team", "design", { headcount: 12 });
+    c.track("paywall_shown");
+    await c.flush();
+    const eventsCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(([url]) =>
+      String(url).includes("/events"),
+    );
+    const body = JSON.parse((eventsCall![1] as RequestInit).body as string);
+    expect(body.events[0].properties.$groups).toEqual({ org: "acme_inc", team: "design" });
+  });
+
+  it("group(type, null) clears that group", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(202, { object: "list", received: 1, env: "sandbox" }));
+
+    const c = newClient();
+    c.group("org", "acme_inc");
+    c.group("org", null);
+    c.track("paywall_shown");
+    await c.flush();
+    const eventsCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(([url]) =>
+      String(url).includes("/events"),
+    );
+    const body = JSON.parse((eventsCall![1] as RequestInit).body as string);
+    expect(body.events[0].properties.$groups).toBeUndefined();
+  });
+
+  it("reset() clears super-properties and groups", async () => {
+    const c = newClient();
+    c.register({ plan: "pro" });
+    c.group("org", "acme");
+    c.reset();
+    expect(c.getSuperProperties()).toEqual({});
+    expect(c.getGroups()).toEqual({});
+  });
+});
+
+describe("consent gating — v0.10.0+", () => {
+  it("track() drops events silently when analytics consent is denied", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(202, { received: 0 }));
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    const c = newClient();
+    c.consent({ analytics: false });
+    c.track("paywall_shown");
+    await c.flush();
+    const eventsCalls = fetchSpy.mock.calls.filter(([url]) =>
+      String(url).includes("/events"),
+    );
+    expect(eventsCalls.length).toBe(0);
+  });
+
+  it("track() still fires when analytics consent is granted", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(202, { received: 1 }));
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    const c = newClient();
+    c.consent({ analytics: true, marketing: false });
+    c.track("paywall_shown");
+    await c.flush();
+    const eventsCalls = fetchSpy.mock.calls.filter(([url]) =>
+      String(url).includes("/events"),
+    );
+    expect(eventsCalls.length).toBe(1);
+  });
+
+  it("webvitals.* events gate on the errors dimension, not analytics", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(202, { received: 1 }));
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    const c = newClient();
+    c.consent({ analytics: false, errors: true });
+    c.track("webvitals.lcp", { valueMs: 1200 });
+    await c.flush();
+    const eventsCalls = fetchSpy.mock.calls.filter(([url]) =>
+      String(url).includes("/events"),
+    );
+    expect(eventsCalls.length).toBe(1);
+  });
+
+  it("identify() short-circuits to a no-op result when analytics denied", async () => {
+    const fetchSpy = vi.fn();
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    const c = newClient();
+    c.consent({ analytics: false });
+    const result = await c.identify("user_847");
+    expect(result.crossdeckCustomerId).toBe("");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("consentStatus() returns the current state", () => {
+    const c = newClient();
+    expect(c.consentStatus()).toEqual({ analytics: true, marketing: true, errors: true });
+    c.consent({ marketing: false });
+    expect(c.consentStatus()).toEqual({ analytics: true, marketing: false, errors: true });
+  });
+});
+
+describe("PII scrubbing — v0.10.0+", () => {
+  it("scrubs emails from URL properties before flush", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(202, { received: 1 }));
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    const c = newClient();
+    c.track("page_viewed_custom", {
+      url: "/users/wes@pinet.co.za/edit",
+      title: "Edit wes@pinet.co.za",
+    });
+    await c.flush();
+    const eventsCall = fetchSpy.mock.calls.find(([url]) => String(url).includes("/events"));
+    const body = JSON.parse((eventsCall![1] as RequestInit).body as string);
+    expect(body.events[0].properties.url).toBe("/users/[email]/edit");
+    expect(body.events[0].properties.title).toBe("Edit [email]");
+  });
+
+  it("scrubPii: false in init disables the redaction", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(202, { received: 1 }));
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    const c = newClient({ scrubPii: false });
+    c.track("page_viewed_custom", { url: "/users/wes@pinet.co.za/edit" });
+    await c.flush();
+    const eventsCall = fetchSpy.mock.calls.find(([url]) => String(url).includes("/events"));
+    const body = JSON.parse((eventsCall![1] as RequestInit).body as string);
+    expect(body.events[0].properties.url).toBe("/users/wes@pinet.co.za/edit");
+  });
+});
+
+describe("forget() — v0.10.0+", () => {
+  it("calls /v1/identity/forget then wipes local state", async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(200, { object: "forgot" }));
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    const c = newClient();
+    c.register({ plan: "pro" });
+    await c.forget();
+    const forgetCall = fetchSpy.mock.calls.find(([url]) =>
+      String(url).includes("/identity/forget"),
+    );
+    expect(forgetCall).toBeDefined();
+    expect(c.getSuperProperties()).toEqual({});
+  });
+
+  it("server-side failure still wipes local state", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: { type: "internal_error", code: "boom", message: "oops" } }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      }),
+    ) as unknown as typeof fetch;
+
+    const c = newClient();
+    c.register({ plan: "pro" });
+    await c.forget();
+    // The right-to-be-forgotten request to our server failed, but the
+    // user's device must still be wiped — that's the contract.
+    expect(c.getSuperProperties()).toEqual({});
+  });
+});
+
+describe("error capture — v1.0.0+", () => {
+  it("captureError() ships an error.handled event with stack + fingerprint", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(202, { object: "list", received: 1, env: "sandbox" }));
+
+    const c = newClient();
+    const err = new Error("boom");
+    c.captureError(err, { tags: { flow: "checkout" }, context: { cart: { items: 3 } } });
+    await c.flush();
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(([url]) =>
+      String(url).includes("/events"),
+    );
+    const body = JSON.parse((call![1] as RequestInit).body as string);
+    const errEv = body.events.find((e: { name: string }) => e.name === "error.handled");
+    expect(errEv).toBeTruthy();
+    expect(errEv.properties.message).toBe("boom");
+    expect(errEv.properties.errorType).toBe("Error");
+    expect(errEv.properties.fingerprint).toMatch(/^[0-9a-f]{8}$/);
+    expect(errEv.properties.tags).toEqual({ flow: "checkout" });
+    expect(errEv.properties.context).toEqual({ cart: { items: 3 } });
+  });
+
+  it("captureMessage() emits error.message with the right level", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(202, { received: 1 }));
+    const c = newClient();
+    c.captureMessage("hit the deprecated path", "warning");
+    await c.flush();
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(([url]) =>
+      String(url).includes("/events"),
+    );
+    const body = JSON.parse((call![1] as RequestInit).body as string);
+    const msgEv = body.events.find((e: { name: string }) => e.name === "error.message");
+    expect(msgEv).toBeTruthy();
+    expect(msgEv.properties.level).toBe("warning");
+  });
+
+  it("setTag() and setContext() attach to every subsequent error", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(202, { received: 1 }));
+    const c = newClient();
+    c.setTag("release", "v0.10.0-test");
+    c.setContext("session", { plan: "pro" });
+    c.captureError(new Error("first"));
+    c.captureError(new Error("second"));
+    await c.flush();
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(([url]) =>
+      String(url).includes("/events"),
+    );
+    const body = JSON.parse((call![1] as RequestInit).body as string);
+    const errors = body.events.filter((e: { name: string }) => e.name === "error.handled");
+    expect(errors).toHaveLength(2);
+    for (const ev of errors) {
+      expect(ev.properties.tags.release).toBe("v0.10.0-test");
+      expect(ev.properties.context.session).toEqual({ plan: "pro" });
+    }
+  });
+
+  it("addBreadcrumb() attaches custom crumbs to subsequent errors", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(202, { received: 1 }));
+    const c = newClient();
+    c.addBreadcrumb({
+      timestamp: Date.now(),
+      category: "custom",
+      message: "user-opened-paywall",
+    });
+    c.captureError(new Error("paywall-crash"));
+    await c.flush();
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(([url]) =>
+      String(url).includes("/events"),
+    );
+    const body = JSON.parse((call![1] as RequestInit).body as string);
+    const errEv = body.events.find((e: { name: string }) => e.name === "error.handled");
+    expect(errEv.properties.breadcrumbs.some((c: { message: string }) => c.message === "user-opened-paywall"))
+      .toBe(true);
+  });
+
+  it("auto-emits breadcrumbs from track() calls", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(202, { received: 1 }));
+    const c = newClient();
+    c.track("paywall_viewed", { variant: "v3" });
+    c.captureError(new Error("after-paywall"));
+    await c.flush();
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(([url]) =>
+      String(url).includes("/events"),
+    );
+    const body = JSON.parse((call![1] as RequestInit).body as string);
+    const errEv = body.events.find((e: { name: string }) => e.name === "error.handled");
+    expect(errEv.properties.breadcrumbs.some((c: { message: string }) => c.message === "paywall_viewed"))
+      .toBe(true);
+  });
+
+  it("consent({ errors: false }) drops error events", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(202, { received: 1 }));
+    const c = newClient();
+    c.consent({ errors: false });
+    c.captureError(new Error("should-not-ship"));
+    await c.flush();
+    const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([url]) =>
+      String(url).includes("/events"),
+    );
+    for (const call of calls) {
+      const body = JSON.parse((call[1] as RequestInit).body as string);
+      const errors = body.events.filter((e: { name: string }) => e.name.startsWith("error."));
+      expect(errors).toHaveLength(0);
+    }
+  });
+
+  it("reset() wipes breadcrumbs + error context", async () => {
+    const c = newClient();
+    c.setTag("flow", "checkout");
+    c.addBreadcrumb({ timestamp: 1, category: "custom", message: "x" });
+    c.reset();
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(202, { received: 1 }));
+    c.captureError(new Error("after-reset"));
+    await c.flush();
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(([url]) =>
+      String(url).includes("/events"),
+    );
+    const body = JSON.parse((call![1] as RequestInit).body as string);
+    const errEv = body.events.find((e: { name: string }) => e.name === "error.handled");
+    expect(errEv.properties.tags).toEqual({});
+    expect(errEv.properties.context).toEqual({});
+    // Breadcrumbs should not contain the pre-reset "x" entry.
+    expect(errEv.properties.breadcrumbs.find((c: { message: string }) => c.message === "x")).toBeUndefined();
+  });
+});
+
 describe("diagnostics", () => {
   it("returns started:false with stable empty shape before start()", () => {
     const c = new CrossdeckClient();
@@ -437,5 +874,18 @@ describe("diagnostics", () => {
     expect(d.anonymousId).toBeNull();
     expect(d.events.buffered).toBe(0);
     expect(d.entitlements.count).toBe(0);
+  });
+
+  it("exposes the Wave-1 diagnostic surface (retry counters + listenerErrors + clock skew)", () => {
+    const c = new CrossdeckClient();
+    const d = c.diagnostics();
+    expect(d.events.consecutiveFailures).toBe(0);
+    expect(d.events.nextRetryAt).toBeNull();
+    expect(d.entitlements.listenerErrors).toBe(0);
+    expect(d.clock).toEqual({
+      lastServerTime: null,
+      lastClientTime: null,
+      skewMs: null,
+    });
   });
 });

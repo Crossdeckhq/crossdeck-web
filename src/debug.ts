@@ -19,7 +19,15 @@ export type DebugSignal =
   | "sdk.entitlement_cache_used"
   | "sdk.purchase_evidence_sent"
   | "sdk.environment_mismatch"
-  | "sdk.sensitive_property_warning";
+  | "sdk.sensitive_property_warning"
+  | "sdk.property_coerced"
+  | "sdk.queue_persisted"
+  | "sdk.queue_restored"
+  | "sdk.flush_retry_scheduled"
+  | "sdk.consent_changed"
+  | "sdk.consent_denied"
+  | "sdk.consent_dnt_applied"
+  | "sdk.pii_scrubbed";
 
 export interface DebugContext {
   /** Free-form details surfaced under the signal — appId, key prefix, etc. */

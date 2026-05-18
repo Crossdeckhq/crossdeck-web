@@ -37,11 +37,24 @@ import { HttpClient, SDK_NAME, SDK_VERSION, DEFAULT_BASE_URL } from "./http";
 import { IdentityStore } from "./identity";
 import { EntitlementCache, type EntitlementsListener } from "./entitlement-cache";
 import { EventQueue, type QueuedEvent } from "./event-queue";
+import { PersistentEventStore } from "./event-storage";
 import { CookieStorage, detectDefaultStorage, MemoryStorage } from "./storage";
 import { randomChars } from "./identity";
 import { collectDeviceInfo, type DeviceInfo } from "./device-info";
 import { AutoTracker, DEFAULT_AUTO_TRACK, type AutoTrackConfig } from "./auto-track";
 import { ConsoleDebugLogger, findSensitivePropertyKeys, type DebugLogger } from "./debug";
+import { validateEventProperties } from "./event-validation";
+import { SuperPropertyStore } from "./super-properties";
+import { WebVitalsTracker } from "./web-vitals";
+import { ConsentManager, scrubPii, scrubPiiFromProperties, type ConsentState } from "./consent";
+import { BreadcrumbBuffer, type Breadcrumb } from "./breadcrumbs";
+import {
+  DEFAULT_ERROR_CAPTURE,
+  ErrorTracker,
+  type CapturedError,
+  type ErrorCaptureConfig,
+  type ErrorLevel,
+} from "./error-capture";
 import type {
   AliasResult,
   AutoTrackOptions,
@@ -50,6 +63,7 @@ import type {
   EntitlementsListResponse,
   Environment,
   EventProperties,
+  GroupTraits,
   HeartbeatResponse,
   IdentifyOptions,
   PublicEntitlement,
@@ -62,12 +76,21 @@ interface InternalState {
   entitlements: EntitlementCache;
   events: EventQueue;
   autoTracker: AutoTracker | null;
+  webVitals: WebVitalsTracker | null;
+  errors: ErrorTracker | null;
+  breadcrumbs: BreadcrumbBuffer;
+  errorContext: Record<string, unknown>;
+  errorTags: Record<string, string>;
+  errorBeforeSend: ((err: CapturedError) => CapturedError | null) | null;
+  superProps: SuperPropertyStore;
+  consent: ConsentManager;
+  scrubPii: boolean;
   /** Cached enrichment payload merged into every event's properties. */
   deviceInfo: DeviceInfo;
   options: Required<
     Omit<
       CrossdeckOptions,
-      "storage" | "sdkVersion" | "autoTrack" | "appVersion" | "debug"
+      "storage" | "sdkVersion" | "autoTrack" | "appVersion" | "debug" | "respectDnt" | "scrubPii"
     >
   > & {
     sdkVersion: string;
@@ -78,6 +101,10 @@ interface InternalState {
   developerUserId: string | null;
   /** Cleanup the unload-flush listeners installed in init(). */
   uninstallUnloadFlush: (() => void) | null;
+  /** Most-recent server time observed via heartbeat (epoch ms). */
+  lastServerTime: number | null;
+  /** Local Date.now() captured at the same moment as lastServerTime. */
+  lastClientTime: number | null;
 }
 
 export class CrossdeckClient {
@@ -126,6 +153,19 @@ export class CrossdeckClient {
       });
     }
 
+    // Localhost auto-detection. When the SDK boots from localhost /
+    // 127.0.0.1 / *.local / RFC1918 private IPs, automatically switch
+    // to a fully-local "dev mode" — no network calls fire, all SDK
+    // methods (track, identify, isEntitled) work against in-memory +
+    // localStorage state only. The dev's live dashboard stays clean
+    // even if they forgot to swap their cd_pub_live_* key for a
+    // cd_pub_test_* one.
+    //
+    // Stripe-grade default. Confidence-first means we trust the dev's
+    // key prefix in production; localhost is the one place where we
+    // proactively prevent accidental pollution.
+    const localDevMode = isLocalHostname();
+
     const storage = options.storage ?? detectDefaultStorage();
     const persistIdentity = options.persistIdentity ?? true;
     const autoTrack = resolveAutoTrack(options.autoTrack);
@@ -155,7 +195,21 @@ export class CrossdeckClient {
       publicKey: opts.publicKey,
       baseUrl: opts.baseUrl,
       sdkVersion: opts.sdkVersion,
+      // Localhost auto-route: HttpClient short-circuits every request
+      // to a successful no-op response when localDevMode is set.
+      // SDK methods continue to work locally; nothing reaches the
+      // server.
+      localDevMode,
     });
+
+    if (localDevMode) {
+      // Single console line on first init — direct, not scolding.
+      // Tells the dev exactly what's happening and how to change it.
+      console.log(
+        "[crossdeck] Localhost detected — running in dev mode (no network calls). " +
+        "Set publicKey: 'cd_pub_test_…' and deploy to a real domain to test against the Crossdeck Sandbox.",
+      );
+    }
     // Bank-grade identity continuity (v0.6.0+). When persistIdentity is
     // on AND we're in a browser, the SDK writes the anonymousId to BOTH
     // localStorage (primary) and a 1st-party cookie (secondary). When
@@ -174,7 +228,29 @@ export class CrossdeckClient {
       typeof (globalThis as { document?: unknown }).document !== "undefined";
     const cookieStore = useCookieRedundancy ? new CookieStorage() : undefined;
     const identity = new IdentityStore(effectiveStorage, opts.storagePrefix, cookieStore);
-    const entitlements = new EntitlementCache();
+    // Durable last-known-good entitlement cache — persisted through the
+    // same storage as identity so isEntitled() answers from device cache
+    // on boot and rides out a Crossdeck outage instead of failing every
+    // Pro customer to free. In-memory only when persistIdentity is off.
+    const entitlements = new EntitlementCache(
+      effectiveStorage,
+      opts.storagePrefix + "entitlements",
+    );
+    // Durable persistence — write queued events through to the primary
+    // identity store (typically localStorage) so a crash / hard close /
+    // keepalive cap exceedance doesn't lose data. Skipped when
+    // persistIdentity is off (strict consent / in-memory-only mode) —
+    // no point writing events to a store the developer told us not to
+    // use.
+    const persistentEvents = persistIdentity
+      ? new PersistentEventStore({ storage: effectiveStorage, prefix: opts.storagePrefix })
+      : null;
+    if (persistentEvents) {
+      debug.emit(
+        "sdk.queue_restored",
+        "Restored persisted event queue from a prior session.",
+      );
+    }
     const events = new EventQueue({
       http,
       batchSize: opts.eventFlushBatchSize,
@@ -184,11 +260,19 @@ export class CrossdeckClient {
         environment: opts.environment,
         sdk: { name: SDK_NAME, version: opts.sdkVersion },
       }),
+      persistentStore: persistentEvents ?? undefined,
       onFirstFlushSuccess: () => {
         debug.emit(
           "sdk.first_event_sent",
           "First telemetry event received. View it in Live Events.",
           { appId: opts.appId, environment: opts.environment },
+        );
+      },
+      onRetryScheduled: (info) => {
+        debug.emit(
+          "sdk.flush_retry_scheduled",
+          `Event flush failed (${info.lastError}). Retrying in ${info.delayMs}ms (attempt ${info.consecutiveFailures}).`,
+          { ...info },
         );
       },
     });
@@ -200,17 +284,55 @@ export class CrossdeckClient {
         ? { appVersion: opts.appVersion }
         : {};
 
+    // Super-property + groups store — Mixpanel pattern. Lives on the
+    // primary identity storage so it survives page reloads but is
+    // cleared on reset() / forget(). Skipped when persistIdentity is
+    // off (strict consent — no writes anywhere).
+    const superProps = new SuperPropertyStore(
+      persistIdentity ? effectiveStorage : new MemoryStorage(),
+      opts.storagePrefix,
+    );
+
+    // Consent gating. DNT auto-detection runs once here if respectDnt
+    // is enabled; otherwise the developer is responsible for calling
+    // Crossdeck.consent({...}) before user-meaningful events fire.
+    const consent = new ConsentManager({ respectDnt: options.respectDnt === true });
+    if (consent.isDntDenied) {
+      debug.emit(
+        "sdk.consent_dnt_applied",
+        "Do Not Track detected — all tracking dimensions denied at init.",
+      );
+    }
+
+    // Breadcrumb ring buffer — the "what was the user doing right
+    // before things broke" feature. Populated by auto-tracking
+    // sources (page views, clicks, custom events) and by manual
+    // Crossdeck.addBreadcrumb() calls. Attached to every error
+    // report; cleared on reset() / forget().
+    const breadcrumbs = new BreadcrumbBuffer(50);
+
     this.state = {
       http,
       identity,
       entitlements,
       events,
       autoTracker: null,
+      webVitals: null,
+      errors: null,
+      breadcrumbs,
+      errorContext: {},
+      errorTags: {},
+      errorBeforeSend: null,
+      superProps,
+      consent,
+      scrubPii: options.scrubPii !== false,
       deviceInfo,
       options: opts,
       debug,
       developerUserId: null,
       uninstallUnloadFlush: null,
+      lastServerTime: null,
+      lastClientTime: null,
     };
 
     debug.emit("sdk.configured", `Crossdeck connected to ${opts.appId} in ${opts.environment} mode.`, {
@@ -228,6 +350,37 @@ export class CrossdeckClient {
       this.state.autoTracker = tracker;
       tracker.install();
     }
+    // Web Vitals tracker — emits LCP / INP / CLS / FCP / TTFB as named
+    // events. No-op in non-browser environments or when the
+    // PerformanceObserver primitive is missing.
+    if (autoTrack.webVitals) {
+      const vitals = new WebVitalsTracker(
+        { enabled: true },
+        (name, properties) => this.track(name, properties),
+      );
+      this.state.webVitals = vitals;
+      vitals.install();
+    }
+
+    // ----- Error capture (the third pillar) -----
+    // Installs global window.onerror + window.onunhandledrejection
+    // handlers, wraps fetch + XHR, and reports each captured error
+    // through the same event queue analytics uses. Crucially this
+    // runs AFTER the queue, identity, and breadcrumb buffer are set
+    // up — error events need all of them.
+    if (autoTrack.errors) {
+      const tracker = new ErrorTracker({
+        config: { ...DEFAULT_ERROR_CAPTURE, enabled: true },
+        breadcrumbs,
+        report: (err) => this.reportError(err),
+        getContext: () => ({ ...this.state!.errorContext }),
+        getTags: () => ({ ...this.state!.errorTags }),
+        beforeSend: this.state!.errorBeforeSend,
+        isConsented: () => this.state!.consent.errors,
+      });
+      this.state.errors = tracker;
+      tracker.install();
+    }
 
     // Terminal flush wiring — without this, every page navigation drops
     // whatever's queued (page.viewed on load, session.ended on pagehide,
@@ -243,8 +396,9 @@ export class CrossdeckClient {
       void this.flush({ keepalive: true }).catch(() => undefined);
     });
 
-    if (opts.autoHeartbeat) {
+    if (opts.autoHeartbeat && !localDevMode) {
       // Fire-and-forget — heartbeat failure shouldn't block init().
+      // Skipped in dev mode — there's nothing to heartbeat.
       void this.heartbeat().catch(() => undefined);
     }
   }
@@ -267,8 +421,19 @@ export class CrossdeckClient {
   /**
    * Link the anonymous device to a developer-supplied user ID. Cache
    * the resolved Crossdeck customer for follow-up calls.
+   *
+   * v0.9.0+ accepts an optional `traits` bag — profile data (name,
+   * plan, signupDate, role) persisted on the Crossdeck customer record
+   * and queryable from dashboards. Traits are sanitised through the
+   * same validator that gates `track()` properties, so a `{ avatar:
+   * <File>, onSave: () => {} }` payload can't corrupt the alias call.
+   *
+   *   Crossdeck.identify("user_847", {
+   *     email: "wes@pinet.co.za",
+   *     traits: { name: "Wes", plan: "pro", signedUpAt: "2026-05-11" },
+   *   });
    */
-  async identify(userId: string, _options?: IdentifyOptions): Promise<AliasResult> {
+  async identify(userId: string, options?: IdentifyOptions): Promise<AliasResult> {
     const s = this.requireStarted();
     if (!userId) {
       throw new CrossdeckError({
@@ -277,12 +442,324 @@ export class CrossdeckClient {
         message: "identify(userId) requires a non-empty userId.",
       });
     }
+    if (!s.consent.analytics) {
+      // No-op on consent denial — but throw NOT — the developer
+      // expected an aliasResult to await. Return a no-op result that
+      // mirrors the wire shape so existing call chains don't break.
+      s.debug.emit(
+        "sdk.consent_denied",
+        `identify() skipped — consent denied for analytics.`,
+      );
+      return {
+        object: "alias_result",
+        crossdeckCustomerId: s.identity.crossdeckCustomerId ?? "",
+        linked: [],
+        mergePending: false,
+        env: s.options.environment,
+      };
+    }
+    // Sanitise traits at the SDK boundary so a malformed bag (function,
+    // BigInt, circular) never crashes the alias request. Empty result
+    // → omit the field entirely so backends that don't yet know about
+    // traits aren't surprised by an unknown key.
+    const traitsValidation =
+      options?.traits !== undefined
+        ? validateEventProperties(options.traits)
+        : null;
+    const traits = traitsValidation && Object.keys(traitsValidation.properties).length > 0
+      ? traitsValidation.properties
+      : undefined;
+    if (s.debug.enabled && traitsValidation && traitsValidation.warnings.length > 0) {
+      for (const w of traitsValidation.warnings) {
+        s.debug.emit(
+          "sdk.property_coerced",
+          `identify() traits key ${JSON.stringify(w.key)} was ${w.kind.replace(/_/g, " ")} during validation.`,
+          { key: w.key, kind: w.kind },
+        );
+      }
+    }
+    const body: Record<string, unknown> = {
+      userId,
+      anonymousId: s.identity.anonymousId,
+    };
+    if (options?.email) body.email = options.email;
+    if (traits) body.traits = traits;
     const result = await s.http.request<AliasResult>("POST", "/identity/alias", {
-      body: { userId, anonymousId: s.identity.anonymousId },
+      body,
     });
+    // A different user identifying on this device — the prior user's
+    // durable entitlement cache must not leak to them. Clear it; the
+    // next getEntitlements() repopulates for the new identity.
+    const priorCdcust = s.identity.crossdeckCustomerId;
+    if (
+      priorCdcust &&
+      result.crossdeckCustomerId &&
+      priorCdcust !== result.crossdeckCustomerId
+    ) {
+      s.entitlements.clear();
+    }
     s.identity.setCrossdeckCustomerId(result.crossdeckCustomerId);
     s.developerUserId = userId;
     return result;
+  }
+
+  /**
+   * Register super-properties — Mixpanel pattern. Once set, every
+   * subsequent event of THIS SDK instance carries these keys on its
+   * properties bag automatically.
+   *
+   *   Crossdeck.register({ plan: "pro", releaseChannel: "beta" });
+   *   Crossdeck.track("paywall_shown");  // includes plan + releaseChannel
+   *
+   * Values that are `null` are deleted (the explicit "stop tracking
+   * this key" idiom). Returns the resulting bag.
+   *
+   * Sanitised through `validateEventProperties` so a `{ avatar: File }`
+   * payload can't poison the queue at flush time.
+   */
+  register(properties: Record<string, unknown>): Record<string, unknown> {
+    const s = this.requireStarted();
+    const validation = validateEventProperties(properties);
+    return s.superProps.register(validation.properties);
+  }
+
+  /** Remove a single super-property key. Idempotent. */
+  unregister(key: string): void {
+    const s = this.requireStarted();
+    s.superProps.unregister(key);
+  }
+
+  /** Snapshot of the current super-property bag. */
+  getSuperProperties(): Record<string, unknown> {
+    if (!this.state) return {};
+    return this.state.superProps.getSuperProperties();
+  }
+
+  /**
+   * Associate the current user with a group (org, team, account, etc.).
+   * Mixpanel / Segment "Group Analytics" pattern.
+   *
+   *   Crossdeck.group("org", "acme_inc");
+   *   Crossdeck.group("team", "design", { headcount: 12 });
+   *
+   * Once set, every subsequent event carries `$groups.<type>: id` on
+   * its properties bag, enabling B2B dashboards ("how is Acme using
+   * the product"). Pass `id: null` to clear a group membership.
+   */
+  group(type: string, id: string | null, traits?: GroupTraits): void {
+    const s = this.requireStarted();
+    if (!type) {
+      throw new CrossdeckError({
+        type: "invalid_request_error",
+        code: "missing_group_type",
+        message: "group(type, id) requires a non-empty type.",
+      });
+    }
+    const sanitisedTraits = traits ? validateEventProperties(traits).properties : undefined;
+    s.superProps.setGroup(type, id, sanitisedTraits);
+  }
+
+  /** Snapshot of the current groups map keyed by type. */
+  getGroups(): Record<string, { id: string; traits?: Record<string, unknown> }> {
+    if (!this.state) return {};
+    return this.state.superProps.getGroups();
+  }
+
+  /**
+   * Update consent state. Three independent dimensions:
+   *
+   *   analytics  — track() + identify() + auto-emissions
+   *   marketing  — paid-traffic click IDs + referrer URL on events
+   *   errors     — Web Vitals + (future) error reporting
+   *
+   * Each defaults to `true` (granted). Pass partial state — only the
+   * keys you provide are changed.
+   *
+   *   Crossdeck.consent({ analytics: false });
+   *   Crossdeck.consent({ marketing: true, errors: true });
+   *
+   * DNT-derived denies cannot be flipped back on; if the browser said
+   * "don't track" we don't track even if the developer code disagrees.
+   */
+  consent(state: Partial<ConsentState>): ConsentState {
+    const s = this.requireStarted();
+    const next = s.consent.set(state);
+    s.debug.emit("sdk.consent_changed", "Consent state updated.", { ...next });
+    return next;
+  }
+
+  /** Snapshot of the current consent state. */
+  consentStatus(): ConsentState {
+    if (!this.state) {
+      return { analytics: true, marketing: true, errors: true };
+    }
+    return this.state.consent.get();
+  }
+
+  // ============================================================
+  // Error capture surface (v1.0.0+)
+  // ============================================================
+
+  /**
+   * Manually capture an error from a try/catch block.
+   *
+   *   try { …risky… } catch (err) {
+   *     Crossdeck.captureError(err, { context: { plan: "pro" } });
+   *   }
+   *
+   * The error is shipped through the same event queue as analytics
+   * (durable, retried, rate-limited per fingerprint). Sends are gated
+   * by `consent.errors`. Returns silently — never throws, even if the
+   * SDK isn't initialised yet.
+   */
+  captureError(
+    error: unknown,
+    options?: { context?: Record<string, unknown>; tags?: Record<string, string>; level?: ErrorLevel },
+  ): void {
+    if (!this.state?.errors) return;
+    this.state.errors.captureError(error, options);
+  }
+
+  /**
+   * Capture a non-error event you want to surface as an issue
+   * ("deprecated path hit", "we entered the slow code path"). Sentry
+   * captureMessage pattern. Returns silently if not initialised.
+   */
+  captureMessage(message: string, level: ErrorLevel = "info"): void {
+    if (!this.state?.errors) return;
+    this.state.errors.captureMessage(message, level);
+  }
+
+  /**
+   * Attach a tag to every subsequent error report. Tags are key/value
+   * strings (Sentry pattern): `setTag("flow", "checkout")` → every
+   * error from this point on carries `tags.flow === "checkout"`.
+   */
+  setTag(key: string, value: string): void {
+    if (!this.state) return;
+    this.state.errorTags[key] = value;
+  }
+
+  /** Bulk-set tags. Merges with existing tags. */
+  setTags(tags: Record<string, string>): void {
+    if (!this.state) return;
+    Object.assign(this.state.errorTags, tags);
+  }
+
+  /**
+   * Attach a structured context blob to every subsequent error report.
+   * Unlike tags (flat key/value), context is a named bag of arbitrary
+   * data: `setContext("cart", { items: 3, total: 42.99 })`.
+   */
+  setContext(name: string, data: Record<string, unknown>): void {
+    if (!this.state) return;
+    this.state.errorContext[name] = data;
+  }
+
+  /**
+   * Add a custom breadcrumb to the rolling buffer. Useful for marking
+   * domain-meaningful moments ("user opened paywall") that aren't
+   * already auto-captured. The buffer caps at 50 entries; old ones
+   * evict.
+   */
+  addBreadcrumb(crumb: Breadcrumb): void {
+    if (!this.state) return;
+    this.state.breadcrumbs.add(crumb);
+  }
+
+  /**
+   * Install a pre-send hook for errors. Return null to drop, or a
+   * modified CapturedError to scrub / rewrite. Sentry's beforeSend
+   * pattern — the only way to redact app-specific PII (auth tokens
+   * in URLs, etc.) before the report leaves the browser.
+   */
+  setErrorBeforeSend(
+    hook: ((err: CapturedError) => CapturedError | null) | null,
+  ): void {
+    if (!this.state) return;
+    this.state.errorBeforeSend = hook;
+  }
+
+  /**
+   * Internal: turn a CapturedError into a Crossdeck event and enqueue
+   * it. Goes through the same queue / persistence / consent / scrub
+   * pipeline as analytics events.
+   */
+  private reportError(err: CapturedError): void {
+    // Sanitise the error payload — stack frames may contain
+    // user-supplied PII (emails / IDs in URLs). The scrub runs
+    // automatically inside track() before the event lands in the
+    // queue, but we also pre-flatten the structured fields here so
+    // they're searchable in the warehouse.
+    const properties: EventProperties = {
+      // Identifiers
+      fingerprint: err.fingerprint,
+      level: err.level,
+      // Error shape
+      errorType: err.errorType,
+      message: err.message,
+      // Stack
+      stack: err.rawStack ?? undefined,
+      frames: err.frames,
+      filename: err.filename ?? undefined,
+      lineno: err.lineno ?? undefined,
+      colno: err.colno ?? undefined,
+      // Context
+      tags: err.tags,
+      context: err.context,
+      breadcrumbs: err.breadcrumbs,
+      // HTTP (only when applicable)
+      http: err.http,
+    };
+    // Strip undefined values for a tidy wire shape.
+    for (const k of Object.keys(properties)) {
+      if (properties[k] === undefined) delete properties[k];
+    }
+    // Use track() for the full pipeline: validation, enrichment,
+    // consent gate (gated on `analytics` though we already verified
+    // `errors`), durable queue, retry, scrub. The event name follows
+    // the namespacing convention so dashboards can filter `name
+    // LIKE 'error.%'`.
+    this.track(err.kind, properties);
+  }
+
+  /**
+   * GDPR/CCPA "right to be forgotten" — calls the backend's
+   * /v1/identity/forget endpoint to schedule a server-side deletion of
+   * the customer's events and profile, then wipes all local state
+   * (identity, entitlements, queue, super-props, persistent stores).
+   *
+   * Idempotent. Safe to call when no identity has been established
+   * (it just wipes the empty local state).
+   *
+   * After forget() resolves, the SDK is in the same shape as if the
+   * developer had called `Crossdeck.reset()` — a fresh anonymousId is
+   * minted and the next session is a brand new identity-graph entry.
+   */
+  async forget(): Promise<void> {
+    const s = this.requireStarted();
+    const identityQuery = this.identityQueryParams();
+    try {
+      await s.http.request<{ object: "forgot" }>("POST", "/identity/forget", {
+        body: {
+          // Send every identity hint we hold; the server resolves the
+          // canonical customer record and queues deletion. Missing
+          // endpoint (older backend) gracefully degrades — local state
+          // still wipes via the reset() call below.
+          ...identityQuery,
+        },
+      });
+    } catch (err) {
+      // Server-side deletion failure is recorded but does not block
+      // local wipe — the developer's user just asked to be forgotten,
+      // refusing to clear their device because the backend hiccupped
+      // would be the wrong call.
+      s.debug.emit(
+        "sdk.consent_denied",
+        `forget() server call failed (${err instanceof Error ? err.message : String(err)}). Local state wiped anyway.`,
+      );
+    }
+    this.reset();
   }
 
   /**
@@ -293,11 +770,22 @@ export class CrossdeckClient {
   async getEntitlements(): Promise<PublicEntitlement[]> {
     const s = this.requireStarted();
     const query = this.identityQueryParams();
-    const result = await s.http.request<EntitlementsListResponse>(
-      "GET",
-      "/entitlements",
-      { query }
-    );
+    let result: EntitlementsListResponse;
+    try {
+      result = await s.http.request<EntitlementsListResponse>(
+        "GET",
+        "/entitlements",
+        { query }
+      );
+    } catch (err) {
+      // The refresh failed (Crossdeck unreachable / transient error).
+      // The durable cache keeps serving last-known-good — but mark it
+      // stale so the staleness is visible via diagnostics(), never a
+      // silent unbounded window. Then rethrow so the caller still sees
+      // the failure.
+      s.entitlements.markRefreshFailed();
+      throw err;
+    }
     if (result.crossdeckCustomerId) {
       s.identity.setCrossdeckCustomerId(result.crossdeckCustomerId);
     }
@@ -306,8 +794,12 @@ export class CrossdeckClient {
   }
 
   /**
-   * Synchronous read from the local cache. Returns false if the cache
-   * has never been populated (call getEntitlements first to warm it).
+   * Synchronous read from the durable local cache — answers from
+   * last-known-good. The cache hydrates from device storage on boot and
+   * survives a Crossdeck outage, so a returning paying customer reads
+   * true even before the session's first network round-trip. Returns
+   * false only for a genuinely new install that has never completed a
+   * getEntitlements(), or for an entitlement past its own validUntil.
    */
   isEntitled(key: string): boolean {
     const s = this.requireStarted();
@@ -367,6 +859,26 @@ export class CrossdeckClient {
       });
     }
 
+    // ----- Consent gate -----
+    // Three gates depending on event family:
+    //   error.*   → consent.errors  (crashes, HTTP failures, captureMessage)
+    //   webvitals.* → consent.errors (performance / reliability data)
+    //   everything else → consent.analytics
+    // Default-on; the developer must explicitly call
+    // Crossdeck.consent({...:false}) to drop them.
+    const isError = name.startsWith("error.");
+    const isWebVital = name.startsWith("webvitals.");
+    const consentGateOk = (isError || isWebVital) ? s.consent.errors : s.consent.analytics;
+    if (!consentGateOk) {
+      if (s.debug.enabled) {
+        s.debug.emit(
+          "sdk.consent_denied",
+          `Dropped event "${name}" — consent denied for ${isWebVital ? "errors" : "analytics"}.`,
+        );
+      }
+      return;
+    }
+
     // NorthStar §15: warn (in debug mode) when a property name looks
     // dangerously like PII — email/password/token/secret/card/phone.
     // We don't strip the field; that's the developer's call. We just
@@ -391,6 +903,29 @@ export class CrossdeckClient {
       );
     }
 
+    // Validate + coerce caller-supplied properties BEFORE merging with
+    // SDK enrichment. This is the boundary where untrusted developer
+    // input becomes safe-to-serialise data: functions/symbols dropped,
+    // Date / BigInt / Error coerced to JSON-friendly shapes, oversized
+    // strings truncated, circular refs replaced. Without this, one bad
+    // property (e.g. `{ onClick: () => {} }`) would crash JSON.stringify
+    // at flush time and poison the entire batch indefinitely.
+    //
+    // The SDK's own enrichment (device info, sessionId, utm_*) is
+    // trusted and not re-validated — those values are produced by
+    // `collectDeviceInfo()` and `captureAcquisition()`, both of which
+    // are typed and bounded.
+    const validation = validateEventProperties(properties);
+    if (s.debug.enabled && validation.warnings.length > 0) {
+      for (const w of validation.warnings) {
+        s.debug.emit(
+          "sdk.property_coerced",
+          `Event "${name}" property ${JSON.stringify(w.key)} was ${w.kind.replace(/_/g, " ")} during validation.`,
+          { eventName: name, key: w.key, kind: w.kind },
+        );
+      }
+    }
+
     // Enrichment policy: device info first, then auto-tracker context
     // (sessionId + per-session acquisition utm_*/referrer), then
     // caller-supplied properties last so a developer can override
@@ -401,28 +936,97 @@ export class CrossdeckClient {
     // — that's the GA4 model: same source/medium/campaign labels every
     // event in the same visit. Empty strings are filtered out so we
     // don't pollute event property dictionaries with no-signal columns.
+    // Enrichment layer order (later wins on key conflict):
+    //   1. Device info (browser/os/locale/screen — captured once at boot)
+    //   2. Auto-tracker session + pageview + acquisition + click IDs
+    //   3. Super properties (registered once via Crossdeck.register)
+    //   4. Group memberships (set via Crossdeck.group)
+    //   5. Caller-supplied properties (sanitised)
+    // The order is intentional: developer-supplied data is most
+    // authoritative, so it overrides anything the SDK auto-attached.
     const enriched: EventProperties = { ...s.deviceInfo };
     const sessionId = s.autoTracker?.currentSessionId;
     if (sessionId) enriched.sessionId = sessionId;
+    const pageviewId = s.autoTracker?.currentPageviewId;
+    if (pageviewId) enriched.pageviewId = pageviewId;
     const acquisition = s.autoTracker?.currentAcquisition;
     if (acquisition) {
+      // UTMs and referrer host are always attached (they're considered
+      // analytics, not marketing PII). Paid-traffic click IDs and the
+      // full referrer URL gate on marketing consent — the developer's
+      // user said "no marketing tracking" → drop them.
       if (acquisition.utm_source) enriched.utm_source = acquisition.utm_source;
       if (acquisition.utm_medium) enriched.utm_medium = acquisition.utm_medium;
       if (acquisition.utm_campaign) enriched.utm_campaign = acquisition.utm_campaign;
       if (acquisition.utm_content) enriched.utm_content = acquisition.utm_content;
       if (acquisition.utm_term) enriched.utm_term = acquisition.utm_term;
-      if (acquisition.referrer) enriched.referrer = acquisition.referrer;
+      if (acquisition.referrer && s.consent.marketing) enriched.referrer = acquisition.referrer;
+      if (s.consent.marketing) {
+        if (acquisition.gclid) enriched.gclid = acquisition.gclid;
+        if (acquisition.fbclid) enriched.fbclid = acquisition.fbclid;
+        if (acquisition.msclkid) enriched.msclkid = acquisition.msclkid;
+        if (acquisition.ttclid) enriched.ttclid = acquisition.ttclid;
+        if (acquisition.li_fat_id) enriched.li_fat_id = acquisition.li_fat_id;
+        if (acquisition.twclid) enriched.twclid = acquisition.twclid;
+      }
     }
-    if (properties) Object.assign(enriched, properties);
+    // Super properties registered via Crossdeck.register(). Skipped
+    // for keys the auto-enrichment already supplied so a `register`
+    // call can't accidentally shadow `sessionId` etc.
+    const supers = s.superProps.getSuperProperties();
+    for (const k of Object.keys(supers)) {
+      if (!(k in enriched)) enriched[k] = supers[k];
+    }
+    // Group memberships — attached as `$groups.<type>` for B2B
+    // dashboards. Mixpanel uses `$groups`; we mirror exactly so
+    // existing integrators don't need a translation layer.
+    const groupIds = s.superProps.getGroupIds();
+    if (Object.keys(groupIds).length > 0) {
+      enriched.$groups = groupIds;
+    }
+    Object.assign(enriched, validation.properties);
+
+    // ----- PII scrub -----
+    // Last step before the event lands in the queue: defensive regex
+    // scrub on URL paths, titles, and any string property value. An
+    // app that puts emails or card numbers in URLs (`/users/wes@…/`)
+    // would otherwise ship that PII straight to the warehouse. Even
+    // with explicit consent this is the right default — Stripe scrubs
+    // pre-storage too. Disable via `scrubPii: false` in init() for
+    // pipelines that do their own redaction.
+    const finalProperties = s.scrubPii ? scrubPiiFromProperties(enriched) : enriched;
 
     const event: QueuedEvent = {
       eventId: this.mintEventId(),
       name,
       timestamp: Date.now(),
-      properties: enriched,
+      properties: finalProperties,
     };
     Object.assign(event, this.identityHintForEvent());
     s.events.enqueue(event);
+
+    // ----- Breadcrumb emission -----
+    // Every analytics event becomes a breadcrumb so error reports
+    // carry the context of what the user was doing just before the
+    // crash. Don't emit a breadcrumb for error events themselves
+    // (would be circular) or webvitals events (noise — they always
+    // fire on every page).
+    if (!isError && !isWebVital) {
+      const category = name.startsWith("page.")
+        ? "navigation"
+        : name.startsWith("element.") || name === "session.started"
+          ? "ui.click"
+          : "custom";
+      s.breadcrumbs.add({
+        timestamp: event.timestamp,
+        category,
+        message: name,
+        // Strip the device-info / session bloat from the breadcrumb
+        // payload — only the caller-supplied properties belong in
+        // the user-readable trail.
+        data: properties ? { ...properties } : undefined,
+      });
+    }
   }
 
   /**
@@ -512,7 +1116,17 @@ export class CrossdeckClient {
    */
   async heartbeat(): Promise<HeartbeatResponse> {
     const s = this.requireStarted();
-    return await s.http.request<HeartbeatResponse>("GET", "/sdk/heartbeat");
+    const result = await s.http.request<HeartbeatResponse>("GET", "/sdk/heartbeat");
+    // Capture clock skew at the SAME instant on both sides. The
+    // `serverTime` field is the only authoritative source the SDK has
+    // for "what does the backend think the time is" — used in
+    // diagnostics() so a wrong-system-clock problem surfaces before
+    // it silently shifts a day of analytics.
+    if (typeof result?.serverTime === "number" && Number.isFinite(result.serverTime)) {
+      s.lastServerTime = result.serverTime;
+      s.lastClientTime = Date.now();
+    }
+    return result;
   }
 
   /**
@@ -522,14 +1136,43 @@ export class CrossdeckClient {
    */
   reset(): void {
     if (!this.state) return;
+    // Server-derived milestone: emit `user.signed_out` BEFORE we wipe
+    // identity. The track() call enqueues the event with the current
+    // developerUserId/cdcust stamped on it; the subsequent reset of
+    // the identity store happens locally only — the queued event
+    // already left with the right identity. The dashboard's Activity
+    // stream therefore shows "Wes signed out" rather than an
+    // anonymous orphan event. Skipped if there's no developerUserId
+    // (calling reset on a never-identified anonymous device is a no-op
+    // semantically — there was nothing to "sign out" of).
+    if (this.state.developerUserId) {
+      try {
+        this.track("user.signed_out", { auto: true });
+      } catch {
+        // track() throws only on invalid name — never for a literal we control.
+        // Defensive catch keeps reset() bulletproof for logout flows.
+      }
+    }
     // Tear down + reinstall the auto-tracker so the new session belongs
     // to the new identity, not the old one. Unload-flush listeners stay
     // installed across reset — they're tied to the SDK lifetime, not
-    // the identity lifetime.
+    // the identity lifetime. Web Vitals stay attached too — their
+    // observers are per-page-life, not per-identity.
     this.state.autoTracker?.uninstall();
     this.state.identity.reset();
     this.state.entitlements.clear();
     this.state.events.reset();
+    // Super properties + groups are identity-scoped — clear on logout
+    // so a fresh anonymous session doesn't inherit the previous user's
+    // plan/role/group context.
+    this.state.superProps.clear();
+    // Breadcrumbs + error context belong to the old session; wipe so
+    // a fresh post-logout error report doesn't carry the previous
+    // user's debugging trail. The ErrorTracker stays installed across
+    // reset — its listeners are page-life-scoped, not identity-scoped.
+    this.state.breadcrumbs.clear();
+    this.state.errorContext = {};
+    this.state.errorTags = {};
     this.state.developerUserId = null;
     if (this.state.autoTracker) {
       const tracker = new AutoTracker(this.state.options.autoTrack, (name, props) =>
@@ -557,17 +1200,24 @@ export class CrossdeckClient {
         developerUserId: null,
         sdkVersion: null,
         baseUrl: null,
-        entitlements: { count: 0, lastUpdated: 0 },
+        clock: { lastServerTime: null, lastClientTime: null, skewMs: null },
+        entitlements: { count: 0, lastUpdated: 0, stale: false, listenerErrors: 0 },
         events: {
           buffered: 0,
           dropped: 0,
           inFlight: 0,
           lastFlushAt: 0,
           lastError: null,
+          consecutiveFailures: 0,
+          nextRetryAt: null,
         },
       };
     }
     const s = this.state;
+    const skewMs =
+      s.lastServerTime !== null && s.lastClientTime !== null
+        ? s.lastClientTime - s.lastServerTime
+        : null;
     return {
       started: true,
       anonymousId: s.identity.anonymousId,
@@ -575,9 +1225,16 @@ export class CrossdeckClient {
       developerUserId: s.developerUserId,
       sdkVersion: s.options.sdkVersion,
       baseUrl: s.options.baseUrl,
+      clock: {
+        lastServerTime: s.lastServerTime,
+        lastClientTime: s.lastClientTime,
+        skewMs,
+      },
       entitlements: {
         count: s.entitlements.list().length,
         lastUpdated: s.entitlements.freshness,
+        stale: s.entitlements.isStale,
+        listenerErrors: s.entitlements.listenerErrors,
       },
       events: s.events.getStats(),
     };
@@ -611,17 +1268,33 @@ export class CrossdeckClient {
     return { anonymousId: s.identity.anonymousId };
   }
 
-  /** Pick the right identity hint to embed on a queued event. */
+  /**
+   * Embed every known identity axis on the event. Earlier this returned
+   * just the highest-priority hint (cdcust → developerUserId → anonymousId)
+   * to keep payloads small, but that leaked into analytics: once a user
+   * was logged in, every subsequent page.viewed shipped without
+   * anonymousId, and `uniqExact(anonymous_id)` on the warehouse side
+   * counted 0 visitors for the entire authenticated app.
+   *
+   * Bank-grade rule: the server is the single source of truth on
+   * dedup. Send everything we know; let CH count by whichever axis
+   * matches the question. Each field is at most 32 bytes — sending
+   * three on every event costs ~80 bytes per request, which is
+   * trivial compared to the analytics correctness it buys.
+   */
   private identityHintForEvent(): Pick<
     QueuedEvent,
     "developerUserId" | "anonymousId" | "crossdeckCustomerId"
   > {
     const s = this.requireStarted();
+    const hint: Pick<QueuedEvent, "developerUserId" | "anonymousId" | "crossdeckCustomerId"> = {
+      anonymousId: s.identity.anonymousId,
+    };
+    if (s.developerUserId) hint.developerUserId = s.developerUserId;
     if (s.identity.crossdeckCustomerId) {
-      return { crossdeckCustomerId: s.identity.crossdeckCustomerId };
+      hint.crossdeckCustomerId = s.identity.crossdeckCustomerId;
     }
-    if (s.developerUserId) return { developerUserId: s.developerUserId };
-    return { anonymousId: s.identity.anonymousId };
+    return hint;
   }
 
   private mintEventId(): string {
@@ -659,11 +1332,61 @@ function inferEnvFromKey(publicKey: string): Environment | null {
   return null;
 }
 
+/**
+ * Detect whether the SDK is booting on a local-development hostname.
+ * Triggers the SDK's silent dev-mode shutoff (no network calls, all
+ * state local) so a developer running their app locally with a live
+ * key cannot accidentally pollute their production analytics.
+ *
+ * Match list:
+ *   - localhost / 127.0.0.1     traditional local dev
+ *   - *.local                   mDNS / Bonjour (e.g. mymac.local)
+ *   - 10.x.x.x                  RFC1918 class A (private)
+ *   - 192.168.x.x               RFC1918 class C (home / office LAN)
+ *   - 172.16-31.x.x             RFC1918 class B
+ *
+ * Vercel preview URLs, Netlify branch deploys, ngrok tunnels — those
+ * resolve to real domains and stay on whatever the key says. They're
+ * not "local," they're "deployed under a temporary domain."
+ *
+ * Returns false in non-browser contexts (Node, Workers) — there's no
+ * window.location to inspect, and a Node consumer that wired up the
+ * SDK is presumably running server-side with a deliberate config.
+ */
+function isLocalHostname(): boolean {
+  // Testing escape hatch — E2E suites + smoke pages need to exercise
+  // the real wire shape from a non-deployed domain (Playwright runs
+  // on 127.0.0.1). Setting `window.__CROSSDECK_FORCE_LIVE__ = true`
+  // before init() returns false here so the SDK fires real fetches.
+  // Not documented in SDK_TRUTH because it's internal-only — real
+  // consumers should never set this.
+  const w = (globalThis as {
+    window?: { location?: { hostname?: string }; __CROSSDECK_FORCE_LIVE__?: boolean };
+  }).window;
+  if (w?.__CROSSDECK_FORCE_LIVE__ === true) return false;
+  const hostname = w?.location?.hostname;
+  if (!hostname) return false;
+  if (hostname === "localhost" || hostname === "127.0.0.1") return true;
+  if (hostname === "::1" || hostname === "[::1]") return true;
+  if (hostname.endsWith(".local")) return true;
+  if (/^10\./.test(hostname)) return true;
+  if (/^192\.168\./.test(hostname)) return true;
+  if (/^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname)) return true;
+  return false;
+}
+
 function resolveAutoTrack(
   input: CrossdeckOptions["autoTrack"],
 ): AutoTrackConfig {
   if (input === false) {
-    return { sessions: false, pageViews: false, deviceInfo: false };
+    return {
+      sessions: false,
+      pageViews: false,
+      deviceInfo: false,
+      clicks: false,
+      webVitals: false,
+      errors: false,
+    };
   }
   if (input === undefined || input === true) {
     return { ...DEFAULT_AUTO_TRACK };
@@ -672,6 +1395,9 @@ function resolveAutoTrack(
     sessions: input.sessions ?? DEFAULT_AUTO_TRACK.sessions,
     pageViews: input.pageViews ?? DEFAULT_AUTO_TRACK.pageViews,
     deviceInfo: input.deviceInfo ?? DEFAULT_AUTO_TRACK.deviceInfo,
+    clicks: input.clicks ?? DEFAULT_AUTO_TRACK.clicks,
+    webVitals: input.webVitals ?? DEFAULT_AUTO_TRACK.webVitals,
+    errors: input.errors ?? DEFAULT_AUTO_TRACK.errors,
   };
 }
 
