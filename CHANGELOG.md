@@ -14,6 +14,12 @@ All notable changes to `@cross-deck/web` will be documented here. The format fol
 - **The entitlement cache is cleared on `reset()` and on an identity switch**, so a prior user's entitlements never leak to the next person on the same device.
 - **Bundle-size budget — `core CJS` 32 KB → 33 KB.** The CJS build includes CommonJS boilerplate the ESM build avoids, and small additions during the dashboard + docs pass pushed gzipped CJS from 31.95 KB → 32.11 KB. ESM (`index.mjs`) and framework builds (`react.mjs`, `vue.mjs`) stay at 32 KB — that's what most modern stacks ship. Still well under the competitive ceiling: Sentry 30 KB (errors only), Mixpanel 55 KB (analytics only), PostHog 40 KB (analytics only). One SDK, three pillars, 33 KB CJS. See `sdks/web/scripts/check-bundle-size.mjs`.
 
+## [1.0.1] — 2026-05-13
+
+### Changed
+
+- **Never silently surface an `Unknown error` again.** Non-`Error` throws (`throw { code: 500 }`, custom classes, a `Response` from `fetch`) now keep their type name, message field, and useful properties (`code` / `status` / `cause` chain). Cross-origin script errors land with a clear label and a `cross_origin: true` tag instead of being silently dropped. Distinct call sites no longer collapse into one `Unknown error` bucket. (PR #65 — `@cross-deck/node` 1.1.1 later ported the same hardening.)
+
 ## [1.0.0] — 2026-05-11
 
 **Error capture — the third pillar.** Closes the trio: analytics +
