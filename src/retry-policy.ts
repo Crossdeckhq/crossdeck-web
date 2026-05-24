@@ -73,9 +73,18 @@ export function computeNextDelay(
   // deterministic RNG for testing.
   const jittered = ceiling * random();
   // Honour server's Retry-After when bigger than our window — the
-  // server's the authority on its own pressure.
-  if (retryAfterMs !== undefined && retryAfterMs > jittered) {
-    return Math.min(max, retryAfterMs);
+  // server's the authority on its own pressure. Pre-fix this was
+  // clamped to `maxMs` (60s default), which meant a `Retry-After: 120`
+  // got truncated to 60s and we hammered an already-rate-limited
+  // endpoint twice as fast as it asked. Honour the server delay
+  // as-is, but cap at 24h as a final sanity guard against an absurd
+  // value (server bug / clock skew on an HTTP-date form) that would
+  // otherwise wedge the queue for years. RFC 7231 doesn't require
+  // honouring beyond that.
+  if (retryAfterMs !== undefined) {
+    const ABSOLUTE_MAX_MS = 24 * 60 * 60 * 1000; // 24h
+    const honoured = Math.min(ABSOLUTE_MAX_MS, retryAfterMs);
+    if (honoured > jittered) return honoured;
   }
   return Math.max(0, Math.round(jittered));
 }

@@ -83,41 +83,41 @@ describe("scrubPii", () => {
     expect(scrubPii("hello world")).toBe("hello world");
   });
 
-  it("replaces email addresses with [email]", () => {
-    expect(scrubPii("user wes@pinet.co.za signed up")).toBe("user [email] signed up");
+  it("replaces email addresses with <email>", () => {
+    expect(scrubPii("user wes@pinet.co.za signed up")).toBe("user <email> signed up");
   });
 
-  it("replaces card numbers with [card]", () => {
-    expect(scrubPii("paid with 4242 4242 4242 4242 today")).toBe("paid with [card] today");
+  it("replaces card numbers with <card>", () => {
+    expect(scrubPii("paid with 4242 4242 4242 4242 today")).toBe("paid with <card> today");
   });
 
   it("replaces both in a single string", () => {
     const result = scrubPii("wes@pinet.co.za used 4242424242424242");
-    expect(result).toContain("[email]");
-    expect(result).toContain("[card]");
+    expect(result).toContain("<email>");
+    expect(result).toContain("<card>");
   });
 
   it("handles multiple emails in one string", () => {
     const result = scrubPii("a@b.com and c@d.com");
-    expect(result).toBe("[email] and [email]");
+    expect(result).toBe("<email> and <email>");
   });
 
   it("is regex-safe (no carry-over state between calls)", () => {
     scrubPii("a@b.com");
-    expect(scrubPii("c@d.com")).toBe("[email]");
+    expect(scrubPii("c@d.com")).toBe("<email>");
   });
 });
 
 describe("scrubPiiFromProperties", () => {
   it("scrubs string values", () => {
     const out = scrubPiiFromProperties({ url: "/users/wes@pinet.co.za/edit", count: 3 });
-    expect(out.url).toBe("/users/[email]/edit");
+    expect(out.url).toBe("/users/<email>/edit");
     expect(out.count).toBe(3);
   });
 
   it("scrubs strings inside arrays", () => {
     const out = scrubPiiFromProperties({ tags: ["x@y.com", "ok"] });
-    expect(out.tags).toEqual(["[email]", "ok"]);
+    expect(out.tags).toEqual(["<email>", "ok"]);
   });
 
   it("passes non-string values through unchanged", () => {
@@ -133,5 +133,43 @@ describe("scrubPiiFromProperties", () => {
     const input = { url: "/users/wes@pinet.co.za/edit" };
     scrubPiiFromProperties(input);
     expect(input.url).toBe("/users/wes@pinet.co.za/edit");
+  });
+
+  it("recurses into nested plain objects (P0 #2 regression)", () => {
+    // Pre-fix the walk was top-level only — any nested email shipped
+    // to the warehouse unscrubbed. Captured-error reports send nested
+    // frames[] / breadcrumbs[] / context{} / http{} through this
+    // scrubber, so the leak surface was broad.
+    const out = scrubPiiFromProperties({
+      request: { url: "/users/wes@pinet.co.za/edit", method: "GET" },
+      user: { email: "wes@pinet.co.za" },
+    });
+    expect((out.request as { url: string }).url).toBe("/users/<email>/edit");
+    expect((out.user as { email: string }).email).toBe("<email>");
+  });
+
+  it("recurses into nested arrays of objects", () => {
+    const out = scrubPiiFromProperties({
+      breadcrumbs: [
+        { message: "wes@pinet.co.za signed in" },
+        { message: "no pii here" },
+      ],
+    });
+    const crumbs = out.breadcrumbs as Array<{ message: string }>;
+    expect(crumbs[0]!.message).toBe("<email> signed in");
+    expect(crumbs[1]!.message).toBe("no pii here");
+  });
+
+  it("leaves class instances + Date / Map / Set untouched", () => {
+    const date = new Date();
+    const map = new Map([["k", "wes@pinet.co.za"]]);
+    const err = new Error("contact: wes@pinet.co.za");
+    const out = scrubPiiFromProperties({ when: date, m: map, err });
+    expect(out.when).toBe(date);
+    expect(out.m).toBe(map);
+    expect(out.err).toBe(err);
+    // The Error's own message stays intact — mutating it would corrupt
+    // downstream error reporting (we don't own it).
+    expect((out.err as Error).message).toBe("contact: wes@pinet.co.za");
   });
 });

@@ -355,9 +355,9 @@ test.describe("@cross-deck/web — end-to-end smoke", () => {
     const ev = requests.find((r) => r.url().endsWith("/events"))!;
     const bodyStr = ev.postData() || "";
     expect(bodyStr).not.toContain("wes@pinet.co.za");
-    expect(bodyStr).toContain("[email]");
+    expect(bodyStr).toContain("<email>");
     expect(bodyStr).not.toContain("4242 4242 4242 4242");
-    expect(bodyStr).toContain("[card]");
+    expect(bodyStr).toContain("<card>");
   });
 
   test("durable queue persists to localStorage after enqueue", async ({ page }) => {

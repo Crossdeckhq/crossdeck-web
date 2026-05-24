@@ -107,6 +107,23 @@ export interface EventQueueConfig {
     retryAfterMs?: number;
     lastError: string;
   }) => void;
+  /**
+   * Fired when the queue DROPS a batch because the server returned a
+   * permanent 4xx (anything except 408 Request Timeout / 429 Too Many
+   * Requests). The host SDK should surface this loudly — pre-fix the
+   * queue retried 4xx errors forever with the same Idempotency-Key,
+   * silently growing the backlog while the customer thought events
+   * were landing. Common causes:
+   *   - 401: publishable key revoked / rotated
+   *   - 403: lacking permission for the project
+   *   - 400/422: malformed batch (schema mismatch, oversized event)
+   *   - 404: endpoint doesn't exist (typo'd baseUrl)
+   */
+  onPermanentFailure?: (info: {
+    status: number;
+    droppedCount: number;
+    lastError: string;
+  }) => void;
 }
 
 export interface EventQueueStats {
@@ -123,6 +140,27 @@ export interface EventQueueStats {
 
 export class EventQueue {
   private buffer: QueuedEvent[] = [];
+  /**
+   * In-flight events that have been spliced from `buffer` for the
+   * current batch but haven't yet been confirmed (success or permanent
+   * failure). On a retry-driven re-flush we re-use this slot alongside
+   * `pendingBatchId` so the Stripe-style Idempotency-Key is preserved
+   * across retries of the SAME logical batch.
+   *
+   * Pre-fix the splice cleared the buffer AND we immediately
+   * `persistent.save(empty)` BEFORE awaiting the network call — a
+   * crash mid-flight wiped the persisted blob and the batch was lost
+   * with no replay on next boot. Now the persisted blob always carries
+   * `[...pendingBatch, ...buffer]` so the in-flight events survive
+   * until the server confirms them.
+   *
+   * Pre-fix every retry attempt also minted a NEW batchId via
+   * `splice + mintBatchId`, defeating the backend's
+   * `Idempotency-Key` dedup. Reuse via this slot brings web in
+   * lockstep with node (which already had the field).
+   */
+  private pendingBatch: QueuedEvent[] | null = null;
+  private pendingBatchId: string | null = null;
   private dropped = 0;
   private inFlight = 0;
   private lastFlushAt = 0;
@@ -140,6 +178,8 @@ export class EventQueue {
     // Rehydrate any events left over from a prior session (crash, hard
     // close, keepalive cap exceeded). Eventid-based dedup at the server
     // means re-sending an event that may have already landed is safe.
+    // Rehydrated events land in `buffer` — the "was in-flight" axis
+    // doesn't survive a crash, so they're treated like fresh enqueues.
     if (this.persistent) {
       const restored = this.persistent.load();
       if (restored.length > 0) {
@@ -168,7 +208,7 @@ export class EventQueue {
       this.cfg.onDrop?.(overflow);
     }
     this.cfg.onBufferChange?.(this.buffer.length);
-    this.persistent?.save(this.buffer);
+    this.persistAll();
     if (this.buffer.length >= this.cfg.batchSize) {
       void this.flush();
     } else {
@@ -178,25 +218,50 @@ export class EventQueue {
 
   /**
    * Flush the buffer to /v1/events. Resolves when the network call
-   * completes (success or failure). On failure, events stay in the
-   * buffer for the next scheduled retry.
+   * completes (success or failure). On a retryable failure the batch
+   * stays in `pendingBatch` for the next scheduled retry — the SAME
+   * batch with the SAME `Idempotency-Key` is re-sent (Stripe pattern).
+   *
+   * Three terminal states from one call:
+   *   - 2xx success: pendingBatch cleared, persisted state collapses to
+   *     just `buffer` (any new events that arrived during in-flight).
+   *   - 4xx permanent (except 408/429): pendingBatch DROPPED, `dropped`
+   *     counter increments, a `permanent_failure` signal fires. The
+   *     server is telling us our request is malformed / our key is
+   *     revoked / we lack permission — retrying with the same key
+   *     forever just grows the queue while the customer thinks events
+   *     are landing.
+   *   - 5xx / network / 408 / 429: pendingBatch + batchId stay; backoff
+   *     schedules a retry; the next `flush()` re-uses both.
    *
    * `options.keepalive` marks the underlying fetch as keepalive so the
-   * browser keeps the request alive past page unload. Use this for
-   * terminal flushes (pagehide / visibilitychange→hidden / beforeunload).
+   * browser keeps the request alive past page unload. Use for terminal
+   * flushes (pagehide / visibilitychange→hidden / beforeunload).
    */
   async flush(options: { keepalive?: boolean } = {}): Promise<IngestResponse | null> {
-    if (this.buffer.length === 0) return null;
+    // Resume an in-flight batch retry path: if we already have a
+    // pending batch (prior flush failed, retry timer / caller is
+    // re-invoking), re-attempt with the SAME batchId. Stripe
+    // Idempotency-Key reuse contract.
+    let batch: QueuedEvent[];
+    let batchId: string;
+    if (this.pendingBatch !== null && this.pendingBatchId !== null) {
+      batch = this.pendingBatch;
+      batchId = this.pendingBatchId;
+    } else {
+      if (this.buffer.length === 0) return null;
+      batch = this.buffer.splice(0);
+      batchId = this.mintBatchId();
+      this.pendingBatch = batch;
+      this.pendingBatchId = batchId;
+      this.inFlight += batch.length;
+      this.cfg.onBufferChange?.(this.buffer.length);
+      // Persisted state continues to include this batch via persistAll()
+      // until the server confirms it — that's the durability fix.
+      this.persistAll();
+    }
     this.cancelTimerIfSet();
     this.nextRetryAt = null;
-
-    // Snapshot the buffer for THIS batch. Use a stable batch id so
-    // retries of the same logical batch reuse the same Idempotency-Key.
-    const batch = this.buffer.splice(0);
-    const batchId = this.mintBatchId();
-    this.inFlight += batch.length;
-    this.persistent?.save(this.buffer);
-    this.cfg.onBufferChange?.(this.buffer.length);
 
     try {
       const env = this.cfg.envelope();
@@ -216,27 +281,47 @@ export class EventQueue {
       this.lastFlushAt = Date.now();
       this.lastError = null;
       this.inFlight -= batch.length;
+      this.pendingBatch = null;
+      this.pendingBatchId = null;
       this.retry.recordSuccess();
-      // Persisted blob no longer needs these events.
-      this.persistent?.save(this.buffer);
+      // Persisted blob collapses to just `buffer` (which may include
+      // new enqueues that arrived while this batch was in flight).
+      this.persistAll();
       if (!this.firstFlushFired) {
         this.firstFlushFired = true;
         this.cfg.onFirstFlushSuccess?.();
       }
       return result;
     } catch (err) {
-      // Re-buffer at the FRONT so older events stay older — preserves
-      // approximate ordering for the server's session reconstruction.
-      this.buffer.unshift(...batch);
-      this.inFlight -= batch.length;
       const message = err instanceof Error ? err.message : String(err);
       this.lastError = message;
-      this.persistent?.save(this.buffer);
-      this.cfg.onBufferChange?.(this.buffer.length);
 
-      // Backoff: schedule a retry through the retry-policy module
-      // instead of falling through to the idle timer (which would
-      // fire at the same rate forever and hammer a flapping server).
+      // Permanent failures (4xx except 408/429) are NOT retryable. The
+      // server is telling us our request is malformed (400/422), our
+      // key is revoked (401), we lack permission (403), or the endpoint
+      // doesn't exist (404). Retrying with the same Idempotency-Key
+      // forever just grows the queue silently while the customer
+      // thinks events are landing. Drop the batch loudly.
+      if (isPermanent4xx(err)) {
+        const droppedCount = batch.length;
+        this.pendingBatch = null;
+        this.pendingBatchId = null;
+        this.inFlight -= droppedCount;
+        this.dropped += droppedCount;
+        this.persistAll();
+        this.cfg.onDrop?.(droppedCount);
+        this.cfg.onPermanentFailure?.({
+          status: (err as { status?: number }).status ?? 0,
+          droppedCount,
+          lastError: message,
+        });
+        return null;
+      }
+
+      // Retryable failure (5xx / network / 408 / 429). pendingBatch +
+      // pendingBatchId stay set; the next scheduler-driven flush re-uses
+      // both. Persisted state is unchanged from the entry path — it
+      // still includes `[...pendingBatch, ...buffer]`.
       const retryAfterMs = extractRetryAfterMs(err);
       const delay = this.retry.nextDelay(retryAfterMs);
       this.scheduleRetry(delay);
@@ -255,6 +340,8 @@ export class EventQueue {
     this.cancelTimerIfSet();
     this.nextRetryAt = null;
     this.buffer = [];
+    this.pendingBatch = null;
+    this.pendingBatchId = null;
     this.dropped = 0;
     this.inFlight = 0;
     this.lastError = null;
@@ -268,6 +355,10 @@ export class EventQueue {
 
   getStats(): EventQueueStats {
     return {
+      // `buffered` counts events waiting for their FIRST flush. The
+      // in-flight pendingBatch (retrying) is tracked separately via
+      // `inFlight` — surfacing both lets diagnostics show "we have
+      // events stuck retrying" distinct from "new events arriving".
       buffered: this.buffer.length,
       dropped: this.dropped,
       inFlight: this.inFlight,
@@ -276,6 +367,31 @@ export class EventQueue {
       consecutiveFailures: this.retry.consecutiveFailures,
       nextRetryAt: this.nextRetryAt,
     };
+  }
+
+  /**
+   * The Idempotency-Key of the in-flight pending batch (if any).
+   * Exposed for testing the Stripe-style retry-reuse contract.
+   * Production callers don't need this.
+   */
+  get pendingIdempotencyKey(): string | null {
+    return this.pendingBatchId;
+  }
+
+  /**
+   * Persist `[...pendingBatch, ...buffer]` — the full set of
+   * not-yet-confirmed events. The next boot rehydrates this exact set
+   * into `buffer` and replays. The server dedups via eventId
+   * (ReplacingMergeTree on the warehouse side), so re-sending an event
+   * that may have already landed is safe.
+   */
+  private persistAll(): void {
+    if (!this.persistent) return;
+    if (this.pendingBatch === null) {
+      this.persistent.save(this.buffer);
+      return;
+    }
+    this.persistent.save([...this.pendingBatch, ...this.buffer]);
   }
 
   // ---------- internal scheduling ----------
@@ -315,6 +431,26 @@ function extractRetryAfterMs(err: unknown): number | undefined {
     return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined;
   }
   return undefined;
+}
+
+/**
+ * True when the error represents a permanent 4xx response that
+ * SHOULDN'T be retried. Excludes 408 Request Timeout and 429 Too Many
+ * Requests — both indicate transient state where the SAME request
+ * (with the SAME Idempotency-Key) can succeed on a retry.
+ *
+ * Anything that isn't a CrossdeckError-shaped object with a numeric
+ * status field returns false (network errors / fetch failures fall
+ * here — those ARE retryable). Conservative default: only flag as
+ * permanent when we have strong evidence from the server.
+ */
+function isPermanent4xx(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const status = (err as { status?: unknown }).status;
+  if (typeof status !== "number" || !Number.isFinite(status)) return false;
+  if (status < 400 || status >= 500) return false;
+  if (status === 408 || status === 429) return false;
+  return true;
 }
 
 function defaultScheduler(fn: () => void, ms: number): () => void {

@@ -172,6 +172,13 @@ export class AutoTracker {
   /** Exposed for tests + consumers that want to reset the session manually. */
   resetSession(): void {
     if (this.session && !this.session.endedSent) this.emitSessionEnd();
+    // Null pageviewId on session boundary so any event fired between
+    // session reset and the next page.viewed doesn't ship the previous
+    // session's pageview attribution. Audit P1 #16: pre-fix the
+    // pageviewId survived 30-min idle resets and silently corrupted
+    // post-resume event → pageview correlation. The next page.viewed
+    // mints a fresh id (see installPageViewTracking's `fire()`).
+    this.pageviewId = null;
     this.session = this.startNewSession();
     this.emitSessionStart();
   }
@@ -221,7 +228,11 @@ export class AutoTracker {
           : 0;
         if (hiddenFor >= SESSION_RESUME_THRESHOLD_MS) {
           // Long idle → end the previous session, start a fresh one.
+          // Null pageviewId on session boundary (audit P1 #16) so any
+          // event between resume and the next page.viewed doesn't
+          // ship the previous session's attribution.
           this.emitSessionEnd();
+          this.pageviewId = null;
           this.session = this.startNewSession();
           this.emitSessionStart();
         } else {

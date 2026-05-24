@@ -1,7 +1,11 @@
-node_modules/
+# Build output — emitted by `npm run build`, never committed.
 dist/
-coverage/
+
+# Playwright artefacts.
+test-results/
+playwright-report/
+
+# Node + IDE noise.
+node_modules/
 .DS_Store
 *.log
-.env
-.env.*

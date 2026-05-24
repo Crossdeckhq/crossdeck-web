@@ -2,6 +2,43 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] — 2026-05-24
+
+KPMG bank-grade audit closure. Six review batches landed five SDK PRs and a backend wiring fix that closes every P0 plus 12 of 13 P1 findings. No public method renames; one internal contract change (`ErrorTracker.beforeSend` is now a getter); behavioural changes to the queue and the PII scrub that strictly improve correctness. Default-safe: existing `Crossdeck.init({...})` callsites keep working exactly the same. The wire `Crossdeck-Sdk-Version` header now reads from `package.json` so it cannot drift from the published bundle.
+
+### Fixed (P0)
+
+- **PII scrub now walks NESTED objects.** Pre-fix `scrubPiiFromProperties` only scrubbed top-level keys plus 1-deep arrays of strings; nested plain objects passed through unchanged. Every `error.*` event ships nested `frames[]` / `breadcrumbs[]` / `context{}` / `http{}` — the leak surface was broad. New impl recurses into plain objects + arrays-of-objects. `Date` / `Map` / `Set` / `Error` instances + class instances pass through untouched (the property validator owns those shapes).
+- **PII scrub sentinel tokens aligned with the backend.** `[email]` / `[card]` → `<email>` / `<card>`, matching `backend/src/api/lib/scrub.ts`. The same event scrubbed by SDK + backend now carries the same sentinel — dashboard aggregation works again.
+- **`setErrorBeforeSend` installed AFTER init() now actually fires.** Pre-fix the `ErrorTracker` captured `beforeSend` by value at construction, so any hook a customer installed later was silently inert and their PII-redaction escape hatch ran on zero errors. Contract is now a getter; the tracker resolves the current hook on every report.
+- **Event queue durability hole during flush.** Pre-fix the buffer was spliced + the persistent blob saved EMPTY before awaiting the network call — a hard-crash mid-flight wiped the persisted batch and the events were lost forever. New `pendingBatch` slot keeps the in-flight batch in the persisted blob until the server confirms it. Side benefit: retries now reuse the same `Idempotency-Key` (Stripe pattern, brings web in lockstep with node).
+- **`identify()` cross-customer cache leak.** Pre-fix the entitlement-cache clear was gated on `priorCdcust && new && prior !== new`, missing two real scenarios where a previous user's entitlements leaked to a new login (ITP / partial cookie eviction wiped cdcust but left the cache; rehydration from a pre-persisted-identity legacy install). New contract: clear when the resolved cdcust differs OR the cache is non-empty under an unknown identity.
+- **Error-capture self-skip derived from `baseUrl`.** Pre-fix hardcoded to `api.cross-deck.com`; customers on staging / regional / self-hosted relay base URLs recursed (5xx → captureHttp → enqueue → /events → captureHttp → ∞). Now strict-hostname compare against `selfHostname` extracted from `init({ baseUrl })`. Case-insensitive. Closes a subtle substring-match bypass (`api.cross-deck.com.attacker.example` would have matched).
+
+### Added
+
+- **`onPermanentFailure` callback on the event queue.** Fires when the queue drops a batch because the server returned a permanent 4xx (anything except 408 / 429). Loud `console.error` independent of debug mode, plus the new `sdk.flush_permanent_failure` debug signal. Pre-fix the queue retried 4xx forever with the same Idempotency-Key, silently growing the backlog while customers thought events were landing.
+- **`onPermanentFailure({ status, droppedCount, lastError })`** is also exposed on the underlying `EventQueueConfig` for embedders wiring their own diagnostics surface.
+- **Event-validation regression: DAG sibling sharing.** Two sibling properties pointing at the SAME sub-object no longer trip a false `[circular_reference]` flag. The validator now uses an ancestor-only stack instead of a shared `WeakSet` — real cycles still flag, legitimate DAGs pass through verbatim.
+
+### Changed
+
+- **`SDK_VERSION` is now imported from `package.json`.** The `Crossdeck-Sdk-Version` header always matches the published bundle. Pre-fix the constant drifted independently — the published 1.2.0 bundle reported `@cross-deck/web@1.1.0` on the wire because nobody bumped the literal.
+- **4xx hard-stop on the event queue.** Status codes other than 408 / 429 in the 4xx range are NOT retryable; the queue drops the batch and surfaces it via `onPermanentFailure`. 408 / 429 / 5xx / network errors stay retryable. RFC-correct.
+- **`Retry-After` is honoured even above `maxMs`.** Pre-fix the policy clamped server-supplied `Retry-After` to `maxMs` (60s default) — a `Retry-After: 120` got truncated to 60s and we hammered the rate limit twice as fast as asked. New 24h absolute sanity cap against server bugs / HTTP-date clock-skew.
+- **`reset()` clears the clock-skew snapshot.** `diagnostics().clock.skewMs` no longer echoes the prior session's skew after logout.
+- **`pageviewId` nulls on session boundary.** Pre-fix it survived 30-min idle resets and corrupted post-resume event → pageview correlation.
+- **`init()` re-entry tears down prior listeners** (`uninstallUnloadFlush`, autoTracker, webVitals, errors). Pre-fix duplicate `pagehide` / `beforeunload` / `visibilitychange` listeners accumulated across HMR / config-swap calls.
+- **PII scrub regex now uses `.replace()` unconditionally.** Dropped the `.test()`-gating that carried `lastIndex` state between calls; the gate could false-skip strings that actually matched. Same fix on both SDKs.
+- **`isLocalHostname()` matches `0.0.0.0` and IPv6 `fe80::/10`** so webpack-dev-server / Vite dev defaults and cross-device Safari Web Inspector hostnames stop polluting live analytics.
+- **Self-skip applies to breadcrumbs too**, not just `captureHttp`. Error reports no longer carry noisy `POST https://api.cross-deck.com/v1/events` crumb entries.
+- **`syncPurchases` body spread bug.** Pre-fix `{ rail: input.rail ?? "apple", ...input }` — the `...input` ran LAST and overrode the default when the caller passed `rail: undefined` explicitly. Reversed: `{ ...input, rail }`.
+- **Bundle-size budgets raised** to fit the durability + permanent-failure surface (~1.5 KB gzipped of bank-grade code). `core ESM` 33 → 35 KB, `core CJS` 34 → 36 KB, `react / vue ESM` 33 → 35 KB, UMD 18 → 19 KB. Still well under single-pillar competitor ceilings.
+
+### Wiring (backend, paired)
+
+- **`v1-events` ingest now honours the per-project `piiAllowList`.** The admin management surface (`v1-pii-allow-list.ts`) was persisted + audit-logged but the hot ingest path never read it. The new `backend/src/api/lib/pii-allow-list-cache.ts` (60s TTL, single-flight) feeds the project's allow-list to `scrubProperties()` on every batch. `HARD_LOCKED_PATTERNS` are always stripped from the effective list regardless of what's in storage. (Backend-only — listed here so SDK consumers know defence-in-depth is fully closed.)
+
 ## [1.1.0] — 2026-05-18
 
 ### Added
@@ -132,7 +169,7 @@ duplicate reporting.
 
 - **`Crossdeck.consent({ analytics, marketing, errors })`** — three independent consent dimensions, each defaulting to `true` (granted). Gates `track()`, `identify()`, paid-traffic click IDs, referrer URLs, and Web Vitals appropriately. `Crossdeck.consentStatus()` returns the current snapshot.
 - **`respectDnt: true`** in `init()` — opt-in DNT support. When the browser exposes `navigator.doNotTrack === "1"`, ALL three consent dimensions are locked OFF permanently (no subsequent `consent()` call can flip them back on).
-- **`scrubPii: true`** (default-on) in `init()` — Stripe-grade regex pass over every event property value, URL path, and title before flush. Email-shaped → `[email]`, card-number-shaped → `[card]`. Caller's input is never mutated. Disable for pipelines that do their own redaction.
+- **`scrubPii: true`** (default-on) in `init()` — Stripe-grade regex pass over every event property value, URL path, and title before flush. Email-shaped → `<email>`, card-number-shaped → `<card>` (tokens aligned with the backend's defence-in-depth scrubber). The walk is recursive: nested plain objects + arrays-of-objects are visited. Caller's input is never mutated. Disable for pipelines that do their own redaction.
 - **`Crossdeck.forget(): Promise<void>`** — GDPR / CCPA right to be forgotten. Calls the new `/v1/identity/forget` endpoint and wipes ALL local state. Idempotent. Server-side failure does NOT block local wipe.
 - **`@cross-deck/web/vue` subpackage** — Vue 3 composables (`useEntitlement(key)` → `Ref<boolean>`, `useEntitlements()` → `Ref<string[]>`) that mirror the React subpackage's contract. Subscribes to the entitlement cache via `onEntitlementsChange`. SSR-safe.
 - **UMD CDN bundle** — `dist/crossdeck.umd.min.js`, registered via `unpkg` / `jsdelivr` package.json fields. Exposes `window.Crossdeck` for no-build-step consumers (plain HTML, Webflow, docs). 13 KB gzipped.

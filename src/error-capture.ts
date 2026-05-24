@@ -171,17 +171,46 @@ export interface ErrorTrackerOptions {
   /** Called to read the current developer-supplied tag bag. */
   getTags: () => Record<string, string>;
   /**
-   * Pre-send hook. Return null to drop the error, or a modified
-   * version to scrub fields. Called LAST, after rate limit + sampling
-   * have already passed.
+   * Pre-send hook GETTER. The tracker invokes this on EVERY captured
+   * error to resolve the current hook reference, then calls the
+   * resolved function with the error (returning `null` to drop, or a
+   * modified `CapturedError` to forward).
+   *
+   * It's a getter — not a static function — so `setErrorBeforeSend()`
+   * can install or replace the hook after init() without re-creating
+   * the tracker. Pre-fix this was a captured value: the tracker took
+   * a snapshot of `null` at construction time and never re-read state,
+   * so every customer's PII scrubber installed later was silently inert.
+   * Bank-grade rule: a hook the customer can call into MUST take effect
+   * the instant it's installed.
+   *
+   * Returning `null` from the GETTER means "no hook configured" and
+   * the report goes through unmodified — distinct from returning a
+   * function-that-returns-null (which means "drop this specific report").
    */
-  beforeSend?: ((err: CapturedError) => CapturedError | null) | null;
+  beforeSend?: () => ((err: CapturedError) => CapturedError | null) | null;
   /**
    * Whether the consent dimension `errors` is currently granted.
    * Checked at capture time so a flip via Crossdeck.consent() takes
    * effect immediately.
    */
   isConsented: () => boolean;
+  /**
+   * The SDK's own backend hostname (derived from
+   * `CrossdeckOptions.baseUrl` at construction time). Used to skip
+   * captureHttp for our own requests — otherwise an outage on the
+   * Crossdeck backend would trigger captureHttp → enqueue →
+   * `POST /events` → fail again → captureHttp → ∞ until the queue
+   * gives up on a permanent 4xx (Batch B fix) or runs forever on a
+   * 5xx. Pre-fix the skip pattern was hardcoded to
+   * `api.cross-deck.com`, which failed customers using staging /
+   * regional / self-hosted-relay base URLs. Audit punch list P0 #7.
+   *
+   * Null / omitted when extraction from baseUrl fails (malformed URL)
+   * OR when the test harness doesn't supply one — the tracker falls
+   * through to "capture everything" rather than swallow.
+   */
+  selfHostname?: string | null;
 }
 
 export class ErrorTracker {
@@ -330,12 +359,19 @@ export class ErrorTracker {
       const start = Date.now();
 
       // Breadcrumb for the request itself — fires regardless of outcome.
-      this.opts.breadcrumbs.add({
-        timestamp: start,
-        category: "http",
-        message: `${method} ${url}`,
-        data: { url, method },
-      });
+      // Skip self-requests: an error report's breadcrumb trail showing
+      // "POST https://api.cross-deck.com/v1/events" entries is noise the
+      // engineer reading the error doesn't care about (the SDK itself
+      // emitted them, not the user code under inspection). Same predicate
+      // as captureHttp's self-skip. Audit P2 polish.
+      if (!isSelfRequest(url, this.opts.selfHostname)) {
+        this.opts.breadcrumbs.add({
+          timestamp: start,
+          category: "http",
+          message: `${method} ${url}`,
+          data: { url, method },
+        });
+      }
 
       try {
         const response = await origFetch(...args);
@@ -343,7 +379,7 @@ export class ErrorTracker {
           // Self-skip Crossdeck's own API to avoid reporting our own
           // backend errors back to ourselves (cycle hazard if the
           // outage is on our side).
-          if (!url.includes("api.cross-deck.com")) {
+          if (!isSelfRequest(url, this.opts.selfHostname)) {
             this.captureHttp({
               url,
               method,
@@ -397,7 +433,7 @@ export class ErrorTracker {
         try {
           if (xhr.status >= 500 && tracker.opts.isConsented()) {
             const url = xhr._cdUrl ?? "";
-            if (!url.includes("api.cross-deck.com")) {
+            if (!isSelfRequest(url, tracker.opts.selfHostname)) {
               tracker.captureHttp({
                 url,
                 method: (xhr._cdMethod ?? "GET").toUpperCase(),
@@ -609,11 +645,15 @@ export class ErrorTracker {
     if (!this.passesSample(err)) return;
     if (!this.passesRateLimit(err)) return;
 
-    // beforeSend hook — last chance to scrub or drop.
+    // beforeSend hook — last chance to scrub or drop. Resolve the
+    // current hook through the getter on every call so a hook installed
+    // via `setErrorBeforeSend()` AFTER init() takes effect on THIS
+    // error, not just future ones constructed by a future tracker.
     let finalErr: CapturedError | null = err;
-    if (this.opts.beforeSend) {
+    const hook = this.opts.beforeSend?.();
+    if (hook) {
       try {
-        finalErr = this.opts.beforeSend(err);
+        finalErr = hook(err);
       } catch {
         // A buggy beforeSend hook must NOT swallow the error report.
         // Fall back to the original.
@@ -893,4 +933,44 @@ function safeClone(v: unknown): unknown {
 
 function safeStringify(v: unknown): string {
   return coerceErrorPayload(v).message;
+}
+
+/**
+ * Extract the hostname from a URL string for use as the
+ * `selfHostname` field on the ErrorTracker. Returns null on malformed
+ * input — the tracker's downstream self-skip check treats `null` as
+ * "no self to skip" and captures everything (safer than swallowing
+ * legitimate errors on a config typo).
+ *
+ * Lowercased for case-insensitive comparison (`Api.Cross-Deck.com`
+ * and `api.cross-deck.com` are the same host).
+ */
+export function extractSelfHostname(baseUrl: string | undefined | null): string | null {
+  if (!baseUrl || typeof baseUrl !== "string") return null;
+  try {
+    return new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when the request URL targets the SDK's own backend hostname.
+ * Used by the fetch / XHR wrappers to skip captureHttp on Crossdeck's
+ * own requests — otherwise a Crossdeck-side outage would recurse
+ * (captureHttp → enqueue → /events → fail → captureHttp → …).
+ *
+ * Strict hostname compare (not substring) so a path like
+ * `https://api.cross-deck.com.attacker.example/...` doesn't falsely
+ * match `api.cross-deck.com`. Falls back to `false` on malformed URLs
+ * — the SDK only ever uses absolute URLs, so a relative URL can't
+ * be the SDK's own request.
+ */
+export function isSelfRequest(requestUrl: string, selfHostname: string | null | undefined): boolean {
+  if (!selfHostname || !requestUrl) return false;
+  try {
+    return new URL(requestUrl).hostname.toLowerCase() === selfHostname;
+  } catch {
+    return false;
+  }
 }

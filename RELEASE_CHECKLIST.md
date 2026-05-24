@@ -102,8 +102,10 @@ project, pick the right environment, and click through:
    sanitised values (no functions, BigInt→string, Date→ISO).
 5. **`register({ plan: 'pro' })` + `track()`** — payload includes `plan: 'pro'`.
 6. **`group('org', 'acme')` + `track()`** — payload includes `$groups.org`.
-7. **`track() with PII`** — Network body should show `[email]` and
-   `[card]`, not the raw values.
+7. **`track() with PII`** — Network body should show `<email>` and
+   `<card>`, not the raw values. Tokens are angle-bracketed (aligned
+   with the backend's defence-in-depth scrubber); a `[email]` /
+   `[card]` sentinel in the body means an out-of-date SDK build.
 8. **`consent({ analytics: false })` + `track()`** — Network tab shows
    NO new `/events` POST.
 9. **Queue 5 events** (no flush) — DevTools → Application → Local

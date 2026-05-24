@@ -24,6 +24,10 @@ export type DebugSignal =
   | "sdk.queue_persisted"
   | "sdk.queue_restored"
   | "sdk.flush_retry_scheduled"
+  // Emitted when the queue drops a batch because the server returned
+  // a permanent 4xx (key revoked, malformed batch, etc.). Always loud,
+  // regardless of debug mode — see the console.error in crossdeck.ts.
+  | "sdk.flush_permanent_failure"
   | "sdk.consent_changed"
   | "sdk.consent_denied"
   | "sdk.consent_dnt_applied"

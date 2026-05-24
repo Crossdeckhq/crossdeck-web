@@ -284,7 +284,7 @@
         creditCard: "4242 4242 4242 4242",
       }),
     );
-    log("info", "Inspect Network tab — values should show '[email]' and '[card]' in the request body.");
+    log("info", "Inspect Network tab — values should show '<email>' and '<card>' in the request body.");
   });
 
   // -------- 4. consent / forget ----------
@@ -497,7 +497,7 @@
       const intercept = async (input, init) => {
         const url = typeof input === "string" ? input : input?.url || "";
         if (url.includes("/events") && init?.body) {
-          if (init.body.includes("[email]") && !init.body.includes("wes@pinet.co.za")) {
+          if (init.body.includes("<email>") && !init.body.includes("wes@pinet.co.za")) {
             scrubbed = true;
           }
         }

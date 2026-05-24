@@ -131,54 +131,74 @@ const EMAIL_PATTERN =
  */
 // Anchor on a digit at both ends so trailing separators (space / hyphen)
 // aren't pulled into the match — otherwise "4242 4242 4242 4242 today"
-// scrubs as "[card]today" instead of "[card] today".
+// scrubs as "<card>today" instead of "<card> today".
 const CARD_PATTERN = /\b\d(?:[ -]?\d){12,18}\b/g;
 
-const REPLACEMENT_EMAIL = "[email]";
-const REPLACEMENT_CARD = "[card]";
+// Sentinel tokens — aligned with backend/src/api/lib/scrub.ts which uses
+// <email>, <card>, <uuid>, <cdcust>, <crossdeck_secret_key>, <aws_access_key>.
+// Mismatched tokens between the SDK scrub and the backend's defence-in-
+// depth scrub would split dashboard aggregation (the same event arriving
+// from two paths would carry two different sentinels).
+const REPLACEMENT_EMAIL = "<email>";
+const REPLACEMENT_CARD = "<card>";
 
 /**
  * Scrub a single string value: replace email-shaped substrings with
- * `[email]` and card-number-shaped substrings with `[card]`. Returns
- * the original string when nothing matched, so callers can do an
- * identity-check to skip allocating a new event copy.
+ * `<email>` and card-number-shaped substrings with `<card>`. Returns
+ * the original string when nothing matched.
+ *
+ * Implementation note: we call `.replace()` unconditionally rather than
+ * gating on `.test()`. The /g regexes are module-level so `.test()`
+ * carries `lastIndex` state between calls — a prior match leaves
+ * `lastIndex` mid-string and the next `.test()` can falsely return
+ * false on a string that DOES match. `.replace(/g)` always scans the
+ * full string regardless of `lastIndex`, so dropping the test-guard
+ * removes the sharp edge at zero cost (when nothing matches, replace
+ * returns the same `(===)` string).
  */
 export function scrubPii(value: string): string {
   if (!value) return value;
-  let out = value;
-  if (EMAIL_PATTERN.test(out)) {
-    out = out.replace(EMAIL_PATTERN, REPLACEMENT_EMAIL);
-  }
-  // Reset regex lastIndex (global flag carries state between calls).
-  EMAIL_PATTERN.lastIndex = 0;
-  if (CARD_PATTERN.test(out)) {
-    out = out.replace(CARD_PATTERN, REPLACEMENT_CARD);
-  }
-  CARD_PATTERN.lastIndex = 0;
-  return out;
+  return value
+    .replace(EMAIL_PATTERN, REPLACEMENT_EMAIL)
+    .replace(CARD_PATTERN, REPLACEMENT_CARD);
 }
 
 /**
  * Walk an event's properties and replace PII-shaped strings in place.
- * Returns the same shape with strings scrubbed; non-string values pass
+ * Returns a new object with strings scrubbed; non-string values pass
  * through unchanged.
  *
- * Mutates a defensive copy — the input is never altered. Caller can
- * pass the result straight to the queue.
+ * Defensive copy — the input is never altered. Caller can pass the
+ * result straight to the queue.
+ *
+ * Recursive: nested plain objects + arrays are walked. Without this,
+ * an event like `{ user: { email: "wes@…" } }` would ship the email
+ * unscrubbed because the top-level value is an object, not a string.
+ * Pre-fix this was the SDK's #1 PII leak vector — every captured-error
+ * report ships nested `frames[]` / `breadcrumbs[]` / `context{}` /
+ * `http{}` shapes through here. Date / Map / Set / Error / class
+ * instances pass through untouched (those are the
+ * `validateEventProperties` sanitiser's job — this is the PII regex
+ * pass only).
  */
 export function scrubPiiFromProperties(
   properties: Record<string, unknown>,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const k of Object.keys(properties)) {
-    const v = properties[k];
-    if (typeof v === "string") {
-      out[k] = scrubPii(v);
-    } else if (Array.isArray(v)) {
-      out[k] = v.map((item) => (typeof item === "string" ? scrubPii(item) : item));
-    } else {
-      out[k] = v;
-    }
+    out[k] = scrubValue(properties[k]);
   }
   return out;
+}
+
+function scrubValue(v: unknown): unknown {
+  if (typeof v === "string") return scrubPii(v);
+  if (Array.isArray(v)) return v.map(scrubValue);
+  if (v && typeof v === "object" && (v as object).constructor === Object) {
+    // Plain objects only — Date, Map, Set, Error, RegExp, class
+    // instances are left untouched so we don't accidentally mutate
+    // an Error's `message` and confuse the downstream error reporter.
+    return scrubPiiFromProperties(v as Record<string, unknown>);
+  }
+  return v;
 }

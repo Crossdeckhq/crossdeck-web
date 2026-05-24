@@ -112,6 +112,28 @@ describe("validateEventProperties — truncation + safety", () => {
     expect(out.properties.arr).toEqual([1, 2, "[circular]"]);
   });
 
+  it("does NOT flag a legitimate DAG — sibling sharing is fine (P1 #18 regression)", () => {
+    // Pre-fix the validator used a shared WeakSet `seen` that added on
+    // visit but never removed. Two sibling properties pointing at the
+    // SAME sub-object would have the second visit (under the second
+    // sibling) trip the [circular] branch and silently lose data with
+    // a misleading warning. New impl uses an ancestor-only stack
+    // (add on entry, delete on exit), so DAG sibling sharing passes
+    // through verbatim and only true cycles flag.
+    const shared = { email: "wes@pinet.co.za", plan: "pro" };
+    const out = validateEventProperties({ owner: shared, member: shared });
+    expect(out.properties.owner).toEqual({ email: "wes@pinet.co.za", plan: "pro" });
+    expect(out.properties.member).toEqual({ email: "wes@pinet.co.za", plan: "pro" });
+    expect(out.warnings.some((w) => w.kind === "circular_reference")).toBe(false);
+  });
+
+  it("does NOT flag a legitimate DAG across arrays (P1 #18 regression)", () => {
+    const shared = { id: 42 };
+    const out = validateEventProperties({ team: [shared, shared, { id: 7 }] });
+    expect(out.properties.team).toEqual([{ id: 42 }, { id: 42 }, { id: 7 }]);
+    expect(out.warnings.some((w) => w.kind === "circular_reference")).toBe(false);
+  });
+
   it("caps deep nesting with '[depth-exceeded]'", () => {
     // 7 levels nested; default maxDepth=5.
     let leaf: unknown = "deep";

@@ -8,9 +8,18 @@
  */
 
 import { CrossdeckError, crossdeckErrorFromResponse } from "./errors";
+// Single source of truth — version comes from package.json so a `npm
+// version` bump is the ONLY place a release-engineer touches. Every
+// downstream surface (Crossdeck-Sdk-Version header, docs, dashboard
+// snippets) reads from here at build time (SDK) or via
+// scripts/sync-sdk-versions.mjs (static docs). Pre-fix this was a
+// hardcoded literal that drifted from package.json — the published
+// 1.2.0 bundle reported `Crossdeck-Sdk-Version: @cross-deck/web@1.1.0`
+// on the wire because nobody bumped the constant.
+import { version as PACKAGE_VERSION } from "../package.json";
 
 export const SDK_NAME = "@cross-deck/web";
-export const SDK_VERSION = "1.1.0";
+export const SDK_VERSION = PACKAGE_VERSION;
 export const DEFAULT_BASE_URL = "https://api.cross-deck.com/v1";
 
 export interface HttpClientConfig {

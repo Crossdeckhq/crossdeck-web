@@ -174,6 +174,114 @@ describe("identify", () => {
     const c = newClient();
     await expect(c.identify("")).rejects.toThrow(CrossdeckError);
   });
+
+  it("clears the entitlement cache when a DIFFERENT user identifies on the same device", async () => {
+    // Existing semantic — the obvious cross-customer leak guard.
+    const c = newClient();
+    globalThis.fetch = vi
+      .fn()
+      // First identify resolves to cdcust_A
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          object: "alias_result",
+          crossdeckCustomerId: "cdcust_A",
+          linked: [],
+          mergePending: false,
+          env: "production",
+        }),
+      )
+      // First getEntitlements warms cache with cdcust_A's pro entitlement
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          object: "list",
+          data: [
+            {
+              object: "entitlement",
+              key: "pro",
+              isActive: true,
+              validUntil: null,
+              source: { rail: "stripe", productId: "p", subscriptionId: "s" },
+              updatedAt: 1700000000,
+            },
+          ],
+          crossdeckCustomerId: "cdcust_A",
+          env: "production",
+        }),
+      )
+      // Second identify resolves to cdcust_B (different user logs in)
+      .mockResolvedValueOnce(
+        jsonResponse(200, {
+          object: "alias_result",
+          crossdeckCustomerId: "cdcust_B",
+          linked: [],
+          mergePending: false,
+          env: "production",
+        }),
+      ) as unknown as typeof fetch;
+    await c.identify("user_A");
+    await c.getEntitlements();
+    expect(c.isEntitled("pro")).toBe(true);
+    await c.identify("user_B");
+    // Cache cleared — cdcust_A's pro entitlement must NOT leak to user_B.
+    expect(c.isEntitled("pro")).toBe(false);
+    expect(c.listEntitlements()).toEqual([]);
+  });
+
+  it("clears the entitlement cache when priorCdcust is null but cache has entries (P0 #5 regression)", async () => {
+    // Audit scenario: cdcust was wiped by ITP / cookie eviction / partial
+    // localStorage clear but the entitlement cache survived under
+    // different storage semantics (different TTLs). Pre-fix the clear
+    // was gated on `priorCdcust && ...`, so this NULL prior path skipped
+    // the clear and the new user inherited the previous user's
+    // entitlements until the next getEntitlements() round-trip
+    // completed — a real cross-customer leak.
+    const storage = new MemoryStorage();
+    // Pre-populate the entitlement cache WITHOUT a cdcust (simulating
+    // the partial wipe — entitlements survived, identity didn't).
+    storage.setItem(
+      "crossdeck:entitlements",
+      JSON.stringify({
+        v: 1,
+        entitlements: [
+          {
+            object: "entitlement",
+            key: "pro",
+            isActive: true,
+            validUntil: null,
+            source: { rail: "stripe", productId: "p_prior", subscriptionId: "s_prior" },
+            updatedAt: 1700000000,
+          },
+        ],
+        lastUpdated: 1700000000,
+      }),
+    );
+    const c = new CrossdeckClient();
+    c.init({
+      appId: "app_web_test",
+      publicKey: "cd_pub_test_001",
+      environment: "sandbox",
+      storage,
+      autoHeartbeat: false,
+    });
+    // Pre-identify: cache rehydrated, cdcust is null.
+    expect(c.isEntitled("pro")).toBe(true);
+    expect(c.diagnostics().crossdeckCustomerId).toBeNull();
+
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        object: "alias_result",
+        crossdeckCustomerId: "cdcust_new_user",
+        linked: [],
+        mergePending: false,
+        env: "production",
+      }),
+    ) as unknown as typeof fetch;
+    await c.identify("user_new");
+    // The new user identified — prior cache must be cleared, not
+    // silently inherited.
+    expect(c.isEntitled("pro")).toBe(false);
+    expect(c.listEntitlements()).toEqual([]);
+  });
 });
 
 describe("getEntitlements + isEntitled", () => {
@@ -381,6 +489,31 @@ describe("syncPurchases", () => {
   it("rejects empty signedTransactionInfo", async () => {
     const c = newClient();
     await expect(c.syncPurchases({ signedTransactionInfo: "" })).rejects.toThrow(CrossdeckError);
+  });
+
+  it("explicit rail: undefined still defaults to apple (P1 #15 spread-order bug regression)", async () => {
+    // Pre-fix `{ rail: input.rail ?? "apple", ...input }` — the
+    // `...input` spread runs LAST and overrides the default when the
+    // caller passes `rail: undefined` explicitly (TypeScript treats
+    // an undefined-typed property as "key present"). New order
+    // `{ ...input, rail }` puts the default last so it wins.
+    const c = newClient();
+    const fetchSpy = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        object: "purchase_result",
+        crossdeckCustomerId: "cdcust_x",
+        env: "sandbox",
+        entitlements: [],
+      }),
+    );
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+
+    await c.syncPurchases({
+      rail: undefined as unknown as "apple",
+      signedTransactionInfo: "eyJ.test.sig",
+    });
+    const body = JSON.parse(fetchSpy.mock.calls[0]![1].body as string);
+    expect(body.rail).toBe("apple"); // pre-fix this was `undefined`
   });
 
   it("purchaseApple() still works as a deprecated alias", async () => {
@@ -678,8 +811,8 @@ describe("PII scrubbing — v0.10.0+", () => {
     await c.flush();
     const eventsCall = fetchSpy.mock.calls.find(([url]) => String(url).includes("/events"));
     const body = JSON.parse((eventsCall![1] as RequestInit).body as string);
-    expect(body.events[0].properties.url).toBe("/users/[email]/edit");
-    expect(body.events[0].properties.title).toBe("Edit [email]");
+    expect(body.events[0].properties.url).toBe("/users/<email>/edit");
+    expect(body.events[0].properties.title).toBe("Edit <email>");
   });
 
   it("scrubPii: false in init disables the redaction", async () => {
@@ -844,6 +977,49 @@ describe("error capture — v1.0.0+", () => {
     }
   });
 
+  it("setErrorBeforeSend installed AFTER init() fires on the next captured error (P0 #3)", async () => {
+    // Regression: previously the ErrorTracker captured `beforeSend` by
+    // value at construction, so any hook installed after init() was
+    // silently inert — the customer's PII scrubber ran on zero errors.
+    // The contract is now a getter that resolves on every report.
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(202, { received: 1 }));
+    const c = newClient();
+    let invoked = 0;
+    c.setErrorBeforeSend((err) => {
+      invoked += 1;
+      return { ...err, message: "[scrubbed]" };
+    });
+    c.captureError(new Error("token=abc123"));
+    await c.flush();
+    expect(invoked).toBe(1);
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(([url]) =>
+      String(url).includes("/events"),
+    );
+    const body = JSON.parse((call![1] as RequestInit).body as string);
+    const errEv = body.events.find((e: { name: string }) => e.name === "error.handled");
+    expect(errEv.properties.message).toBe("[scrubbed]");
+  });
+
+  it("setErrorBeforeSend(null) clears a previously-installed hook", async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(202, { received: 1 }));
+    const c = newClient();
+    c.setErrorBeforeSend(() => null);
+    c.setErrorBeforeSend(null); // explicit clear
+    c.captureError(new Error("must-ship"));
+    await c.flush();
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find(([url]) =>
+      String(url).includes("/events"),
+    );
+    const body = JSON.parse((call![1] as RequestInit).body as string);
+    const errEv = body.events.find((e: { name: string }) => e.name === "error.handled");
+    expect(errEv).toBeTruthy();
+    expect(errEv.properties.message).toBe("must-ship");
+  });
+
   it("reset() wipes breadcrumbs + error context", async () => {
     const c = newClient();
     c.setTag("flow", "checkout");
@@ -887,5 +1063,32 @@ describe("diagnostics", () => {
       lastClientTime: null,
       skewMs: null,
     });
+  });
+
+  it("reset() nulls clock-skew snapshot so diagnostics() doesn't echo prior session (P1 #17 regression)", async () => {
+    // Pre-fix `state.lastServerTime` / `lastClientTime` survived
+    // logout, so `diagnostics().clock.skewMs` for the next user kept
+    // reporting the prior session's skew until the next heartbeat
+    // rewrote them. New contract: reset() nulls both.
+    const c = newClient();
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      jsonResponse(200, {
+        object: "heartbeat",
+        ok: true,
+        projectId: "proj_x",
+        appId: "app_web_test",
+        platform: "web",
+        env: "sandbox",
+        serverTime: 1_700_000_000_000,
+      }),
+    ) as unknown as typeof fetch;
+    await c.heartbeat();
+    expect(c.diagnostics().clock.lastServerTime).toBe(1_700_000_000_000);
+    expect(c.diagnostics().clock.lastClientTime).not.toBeNull();
+
+    c.reset();
+    expect(c.diagnostics().clock.lastServerTime).toBeNull();
+    expect(c.diagnostics().clock.lastClientTime).toBeNull();
+    expect(c.diagnostics().clock.skewMs).toBeNull();
   });
 });

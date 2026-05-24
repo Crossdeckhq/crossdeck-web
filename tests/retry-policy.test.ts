@@ -32,8 +32,26 @@ describe("computeNextDelay — backoff math", () => {
     expect(d).toBe(30_000);
   });
 
-  it("Retry-After is still clamped to maxMs", () => {
-    const d = computeNextDelay(0, 1_000_000, { baseMs: 1000, maxMs: 60_000 }, () => 1);
+  it("Retry-After is honoured ABOVE maxMs (server is the authority on its own pressure)", () => {
+    // Pre-fix the policy clamped server-supplied Retry-After to maxMs
+    // (60s default) — a "Retry-After: 120" got truncated to 60s and we
+    // hammered an already-rate-limited endpoint twice as fast as it
+    // asked. New contract honours the server delay as-is. Audit P1 #8.
+    const d = computeNextDelay(0, 120_000, { baseMs: 1000, maxMs: 60_000 }, () => 1);
+    expect(d).toBe(120_000);
+  });
+
+  it("Retry-After is capped at an absolute 24h sanity guard", () => {
+    // Defence against server bugs / HTTP-date clock-skew that could
+    // wedge the queue for years. 24h is the upper bound; anything
+    // beyond truncates.
+    const day = 24 * 60 * 60 * 1000;
+    const d = computeNextDelay(0, day * 10, { baseMs: 1000, maxMs: 60_000 }, () => 1);
+    expect(d).toBe(day);
+  });
+
+  it("Retry-After at exactly maxMs still honoured (boundary check)", () => {
+    const d = computeNextDelay(0, 60_000, { baseMs: 1000, maxMs: 60_000 }, () => 1);
     expect(d).toBe(60_000);
   });
 

@@ -231,6 +231,19 @@ describe("AutoTracker — session lifecycle", () => {
     expect(names).toContain("session.ended");
     expect(names).toContain("session.started");
   });
+
+  it("resetSession() nulls pageviewId so post-reset events don't ship prior attribution (P1 #16 regression)", () => {
+    // Pre-fix pageviewId survived 30-min idle resets and silently
+    // corrupted post-resume event → pageview correlation. New
+    // contract: pageviewId nulls on session boundary, repopulates on
+    // the next page.viewed.
+    const ctx = makeContext();
+    const t = newTracker({}, ctx.track);
+    t.install();
+    expect(t.currentPageviewId).toMatch(/^pv_/); // initial page.viewed fired
+    t.resetSession();
+    expect(t.currentPageviewId).toBeNull();
+  });
 });
 
 // ============================================================

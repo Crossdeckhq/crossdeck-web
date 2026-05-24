@@ -84,7 +84,17 @@ export function validateEventProperties(
   const maxBatchPropertyBytes = options.maxBatchPropertyBytes ?? DEFAULT_MAX_BYTES;
   const maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
 
-  const seen = new WeakSet<object>();
+  // Ancestor-stack circular detection: add the object/array to `seen`
+  // before recursing into its children, REMOVE it after. A re-encounter
+  // while a value is still in the set means it's an ancestor of the
+  // current node (a real cycle). Sibling sharing — two properties
+  // pointing at the same sub-object (a legitimate DAG, e.g. an enriched
+  // event with `{ user: shared, owner: shared }`) — is NOT a cycle and
+  // must NOT be flagged. Pre-fix the WeakSet was add-on-visit /
+  // never-delete, so the second sibling visit always tripped the
+  // `[circular]` branch and silently dropped real data with a
+  // misleading warning. Audit P1 #18.
+  const seen = new Set<object>();
 
   const visit = (
     value: unknown,
@@ -182,6 +192,10 @@ export function validateEventProperties(
         const result = visit(value[i], `${key}[${i}]`, depth + 1);
         if (result.keep) out.push(result.value);
       }
+      // Delete on exit — the array is no longer an ancestor of any
+      // sibling visit. Sibling DAG sharing is fine; only true cycles
+      // (parent re-encountered via a descendant) should flag.
+      seen.delete(value);
       return { keep: true, value: out };
     }
 
@@ -197,6 +211,8 @@ export function validateEventProperties(
         const result = visit(obj[k], `${key}.${k}`, depth + 1);
         if (result.keep) out[k] = result.value;
       }
+      // Delete on exit — see the array branch above for rationale.
+      seen.delete(obj);
       return { keep: true, value: out };
     }
 

@@ -45,12 +45,23 @@ const distDir = path.resolve(new URL(".", import.meta.url).pathname, "../dist");
 // 30 KB (errors-only), Mixpanel 55 KB (analytics-only), PostHog
 // 40 KB (analytics-only) — for one bundle that ships all three
 // pillars.
+//
+// Budgets raised again May 2026 — Batch B audit fix (PR #390): the
+// queue's pendingBatch slot, persistAll(), isPermanent4xx() helper,
+// onPermanentFailure callback, and the loud `console.error` +
+// `sdk.flush_permanent_failure` debug signal add ~1.5 KB gzipped of
+// non-removable bank-grade durability code. Pre-fix the queue lost
+// the in-flight batch on a hard-crash mid-flight AND retried 4xx
+// errors forever with the same Idempotency-Key. Costs +2 KB across
+// the bundles; still under every single-pillar competitor's ceiling.
+// core ESM 33 → 35 KB, core CJS 34 → 36 KB, react / vue ESM 33 → 35
+// KB, UMD 18 → 19 KB.
 const BUDGETS = [
-  { file: "index.mjs", maxGzipKb: 33, label: "core ESM" },
-  { file: "index.cjs", maxGzipKb: 34, label: "core CJS" },
-  { file: "react.mjs", maxGzipKb: 33, label: "react ESM" },
-  { file: "vue.mjs", maxGzipKb: 33, label: "vue ESM" },
-  { file: "crossdeck.umd.min.js", maxGzipKb: 18, label: "UMD min" },
+  { file: "index.mjs", maxGzipKb: 35, label: "core ESM" },
+  { file: "index.cjs", maxGzipKb: 36, label: "core CJS" },
+  { file: "react.mjs", maxGzipKb: 35, label: "react ESM" },
+  { file: "vue.mjs", maxGzipKb: 35, label: "vue ESM" },
+  { file: "crossdeck.umd.min.js", maxGzipKb: 19, label: "UMD min" },
 ];
 
 let failed = false;

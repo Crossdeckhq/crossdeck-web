@@ -51,6 +51,7 @@ import { BreadcrumbBuffer, type Breadcrumb } from "./breadcrumbs";
 import {
   DEFAULT_ERROR_CAPTURE,
   ErrorTracker,
+  extractSelfHostname,
   type CapturedError,
   type ErrorCaptureConfig,
   type ErrorLevel,
@@ -120,6 +121,20 @@ export class CrossdeckClient {
    * mismatched env fails fast at boot rather than at first event-flush.
    */
   init(options: CrossdeckOptions): void {
+    // Idempotent re-init: tear down listeners from any prior init()
+    // before constructing the new state. Pre-fix
+    // `state.uninstallUnloadFlush` was set but never invoked anywhere,
+    // so calling init() a second time (config swap during dev,
+    // multi-tenant SDK shell, hot-module-replacement) silently
+    // accumulated duplicate `pagehide` / `beforeunload` /
+    // `visibilitychange` listeners. Each one fired a redundant flush.
+    // Audit P2: now teardown runs on every re-init.
+    if (this.state) {
+      try { this.state.uninstallUnloadFlush?.(); } catch { /* ignore */ }
+      try { this.state.autoTracker?.uninstall(); } catch { /* ignore */ }
+      try { this.state.webVitals?.uninstall(); } catch { /* ignore */ }
+      try { this.state.errors?.uninstall(); } catch { /* ignore */ }
+    }
     if (!options.publicKey || !options.publicKey.startsWith("cd_pub_")) {
       throw new CrossdeckError({
         type: "configuration_error",
@@ -275,6 +290,22 @@ export class CrossdeckClient {
           { ...info },
         );
       },
+      onPermanentFailure: (info) => {
+        // Bank-grade rule: a permanent 4xx that's dropping events MUST
+        // be loud regardless of debug mode. Pre-fix the queue retried
+        // 4xx forever silently and the customer never knew their key
+        // was revoked. console.error fires unconditionally; the debug
+        // signal lets the dashboard onboarding flow detect + surface
+        // the problem too.
+        const headline = `[crossdeck] Event batch DROPPED (status ${info.status}): ${info.lastError}. ${info.droppedCount} event(s) lost — check your publishable key + app config.`;
+        // eslint-disable-next-line no-console
+        console.error(headline);
+        debug.emit(
+          "sdk.flush_permanent_failure",
+          headline,
+          { ...info },
+        );
+      },
     });
 
     // Collect device info ONCE at boot; cheap to re-use on every event.
@@ -375,8 +406,20 @@ export class CrossdeckClient {
         report: (err) => this.reportError(err),
         getContext: () => ({ ...this.state!.errorContext }),
         getTags: () => ({ ...this.state!.errorTags }),
-        beforeSend: this.state!.errorBeforeSend,
+        // GETTER, not a captured value — `setErrorBeforeSend()` mutates
+        // `state.errorBeforeSend` after init() and the tracker MUST
+        // pick up the new hook on the next error. The pre-fix shape
+        // (`beforeSend: this.state!.errorBeforeSend`) snapshotted
+        // `null` at construction and made the customer's PII scrubber
+        // silently inert. See error-capture.ts:ErrorTrackerOptions.beforeSend.
+        beforeSend: () => this.state!.errorBeforeSend,
         isConsented: () => this.state!.consent.errors,
+        // Derived from the configured baseUrl at init() time. Used by
+        // the fetch / XHR wrappers to skip captureHttp on Crossdeck's
+        // own requests — pre-fix the skip was hardcoded to
+        // `api.cross-deck.com` and broke for customers on staging /
+        // regional / self-hosted base URLs (recursive capture loop).
+        selfHostname: extractSelfHostname(opts.baseUrl),
       });
       this.state.errors = tracker;
       tracker.install();
@@ -490,11 +533,25 @@ export class CrossdeckClient {
     // A different user identifying on this device — the prior user's
     // durable entitlement cache must not leak to them. Clear it; the
     // next getEntitlements() repopulates for the new identity.
+    //
+    // Pre-fix the clear was gated on `priorCdcust && new && prior !== new`.
+    // That missed two real scenarios: (1) priorCdcust was wiped by
+    // ITP / cookie eviction / partial localStorage clear but the
+    // entitlement cache survived the same wipe (different storage
+    // semantics — eg cookies and localStorage have independent TTLs);
+    // (2) the cache was rehydrated from a prior identify() that
+    // happened before persistent identity was wired up (legacy installs).
+    // In both cases a new user identifying on the device would read
+    // the previous user's entitlements until the first
+    // `getEntitlements()` round-trip completed — a P0 cross-customer
+    // leak. New contract: clear whenever the resolved cdcust differs
+    // from the in-memory snapshot OR the cache is non-empty under an
+    // unknown identity. Audit punch list P0 #5.
     const priorCdcust = s.identity.crossdeckCustomerId;
+    const cacheHasEntries = s.entitlements.list().length > 0;
     if (
-      priorCdcust &&
-      result.crossdeckCustomerId &&
-      priorCdcust !== result.crossdeckCustomerId
+      (priorCdcust && result.crossdeckCustomerId && priorCdcust !== result.crossdeckCustomerId) ||
+      (!priorCdcust && cacheHasEntries)
     ) {
       s.entitlements.clear();
     }
@@ -1071,8 +1128,17 @@ export class CrossdeckClient {
         message: "syncPurchases requires a signedTransactionInfo string from StoreKit 2.",
       });
     }
+    // Spread input FIRST so the explicit `rail` default below WINS.
+    // Pre-fix order was `{ rail: input.rail ?? "apple", ...input }`
+    // — but `...input` runs LAST and overrides the default with the
+    // caller's literal `rail` key, including the case where the
+    // caller passes `rail: undefined` explicitly (TypeScript treats
+    // an undefined-typed property as "key present"). Reversing the
+    // order so the default sits last fixes both the explicit-undefined
+    // case AND the omitted-key case in one line.
+    const rail = input.rail ?? "apple";
     const result = await s.http.request<PurchaseResult>("POST", "/purchases/sync", {
-      body: { rail: input.rail ?? "apple", ...input },
+      body: { ...input, rail },
     });
     s.identity.setCrossdeckCustomerId(result.crossdeckCustomerId);
     s.entitlements.setFromList(result.entitlements);
@@ -1174,6 +1240,13 @@ export class CrossdeckClient {
     this.state.errorContext = {};
     this.state.errorTags = {};
     this.state.developerUserId = null;
+    // Null clock-skew snapshot on reset — these values belong to the
+    // pre-logout session. Pre-fix `diagnostics().clock.skewMs` for the
+    // next user kept reporting the prior session's skew until the
+    // next heartbeat completed (audit P1 #17). The next heartbeat
+    // repopulates with the new instant.
+    this.state.lastServerTime = null;
+    this.state.lastClientTime = null;
     if (this.state.autoTracker) {
       const tracker = new AutoTracker(this.state.options.autoTrack, (name, props) =>
         this.track(name, props),
@@ -1367,7 +1440,18 @@ function isLocalHostname(): boolean {
   const hostname = w?.location?.hostname;
   if (!hostname) return false;
   if (hostname === "localhost" || hostname === "127.0.0.1") return true;
+  // 0.0.0.0 is the default bind address for webpack-dev-server /
+  // vite dev server when the team is on a shared LAN dev. Audit P2:
+  // pre-fix this slipped through and polluted live analytics for
+  // anyone running those configs.
+  if (hostname === "0.0.0.0") return true;
   if (hostname === "::1" || hostname === "[::1]") return true;
+  // IPv6 link-local: fe80::/10. Devices on the same network segment
+  // (browser inspector debugging an iPad via Safari Web Inspector
+  // over USB lands here). Conservative match — only the link-local
+  // prefix, not the broader ULA fc00::/7 range which is intended for
+  // private routed networks and shouldn't auto-quiet by default.
+  if (/^\[?fe80::/i.test(hostname)) return true;
   if (hostname.endsWith(".local")) return true;
   if (/^10\./.test(hostname)) return true;
   if (/^192\.168\./.test(hostname)) return true;

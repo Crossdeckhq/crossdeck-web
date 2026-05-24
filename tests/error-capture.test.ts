@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { ErrorTracker, DEFAULT_ERROR_CAPTURE } from "../src/error-capture";
+import { ErrorTracker, DEFAULT_ERROR_CAPTURE, extractSelfHostname, isSelfRequest } from "../src/error-capture";
 import { BreadcrumbBuffer } from "../src/breadcrumbs";
 import type { CapturedError, ErrorCaptureConfig } from "../src/error-capture";
 
@@ -280,7 +280,7 @@ describe("ErrorTracker — beforeSend hook", () => {
       getContext: () => ({}),
       getTags: () => ({}),
       isConsented: () => true,
-      beforeSend: (err) => {
+      beforeSend: () => (err) => {
         seen.push(err.message);
         return err;
       },
@@ -298,7 +298,7 @@ describe("ErrorTracker — beforeSend hook", () => {
       getContext: () => ({}),
       getTags: () => ({}),
       isConsented: () => true,
-      beforeSend: () => null,
+      beforeSend: () => () => null,
     });
     tracker.captureError(new Error("dropped"));
     expect(reports).toHaveLength(0);
@@ -313,7 +313,7 @@ describe("ErrorTracker — beforeSend hook", () => {
       getContext: () => ({}),
       getTags: () => ({}),
       isConsented: () => true,
-      beforeSend: () => { throw new Error("buggy hook"); },
+      beforeSend: () => () => { throw new Error("buggy hook"); },
     });
     tracker.captureError(new Error("real bug"));
     expect(reports).toHaveLength(1);
@@ -364,5 +364,99 @@ describe("ErrorTracker — breadcrumb attachment", () => {
     tracker.captureError(new Error("x"));
     expect(reports[0]!.breadcrumbs).toHaveLength(2);
     expect(reports[0]!.breadcrumbs[0]!.message).toBe("clicked-buy");
+  });
+});
+
+// ============================================================
+// Self-skip URL matching (P0 #7) — unit tests for the pure
+// extractSelfHostname() + isSelfRequest() helpers used by the
+// fetch / XHR wraps to skip captureHttp on Crossdeck's own
+// requests. The wrap-firing integration is covered end-to-end
+// by sdks/node/tests/error-capture.test.ts (same code shape on
+// web; pure-function unit tests below are environment-agnostic
+// and exhaustive on the matching logic that pre-fix was a
+// `url.includes("api.cross-deck.com")` hardcode).
+// ============================================================
+
+describe("extractSelfHostname (P0 #7)", () => {
+  it("returns the lowercased hostname from a https URL", () => {
+    expect(extractSelfHostname("https://api.cross-deck.com/v1")).toBe("api.cross-deck.com");
+  });
+
+  it("lowercases mixed-case hostnames", () => {
+    expect(extractSelfHostname("https://API.Cross-Deck.COM/v1")).toBe("api.cross-deck.com");
+  });
+
+  it("works with a custom baseUrl (regional / staging / self-hosted relay)", () => {
+    expect(extractSelfHostname("https://crossdeck-eu.customer.example/v1")).toBe(
+      "crossdeck-eu.customer.example",
+    );
+    expect(extractSelfHostname("https://api-staging.cross-deck.com/v1")).toBe(
+      "api-staging.cross-deck.com",
+    );
+  });
+
+  it("works with http (localhost emulator paths)", () => {
+    expect(extractSelfHostname("http://localhost:5001/crossdeck-47d8f/us-east4/v1")).toBe("localhost");
+  });
+
+  it("returns null on malformed input", () => {
+    expect(extractSelfHostname("not-a-url")).toBeNull();
+    expect(extractSelfHostname("")).toBeNull();
+    expect(extractSelfHostname(undefined)).toBeNull();
+    expect(extractSelfHostname(null)).toBeNull();
+  });
+});
+
+describe("isSelfRequest (P0 #7)", () => {
+  it("returns true when the request hostname matches", () => {
+    expect(isSelfRequest("https://api.cross-deck.com/v1/events", "api.cross-deck.com")).toBe(true);
+  });
+
+  it("returns true on a CUSTOM baseUrl-derived hostname (regional / staging / self-hosted)", () => {
+    // Pre-fix the skip was hardcoded to "api.cross-deck.com" — any
+    // customer pointing the SDK at a regional / staging / self-hosted
+    // base URL recursed: SDK 5xx → captureHttp → enqueue → /events
+    // → captureHttp → ∞. Post-fix the skip is derived from baseUrl
+    // via extractSelfHostname.
+    expect(
+      isSelfRequest(
+        "https://crossdeck-eu.customer.example/v1/events",
+        "crossdeck-eu.customer.example",
+      ),
+    ).toBe(true);
+  });
+
+  it("is case-insensitive on the request hostname", () => {
+    expect(isSelfRequest("https://API.Cross-Deck.COM/v1/events", "api.cross-deck.com")).toBe(true);
+  });
+
+  it("is hostname-STRICT — substring matches do NOT count (attacker.example with our host as a prefix)", () => {
+    // Pre-fix `url.includes("api.cross-deck.com")` would have falsely
+    // matched `https://api.cross-deck.com.attacker.example/...` and
+    // SKIPPED capture for what's actually a malicious / unrelated host.
+    // New impl parses URL + compares hostname strictly.
+    expect(
+      isSelfRequest("https://api.cross-deck.com.attacker.example/v1/events", "api.cross-deck.com"),
+    ).toBe(false);
+    expect(isSelfRequest("https://evil-api.cross-deck.com/x", "api.cross-deck.com")).toBe(false);
+  });
+
+  it("returns false on a non-matching hostname", () => {
+    expect(isSelfRequest("https://example.com/v1/events", "api.cross-deck.com")).toBe(false);
+    expect(isSelfRequest("https://api.stripe.com/v1/charges", "api.cross-deck.com")).toBe(false);
+  });
+
+  it("returns false when selfHostname is null / undefined (safe fall-through)", () => {
+    // No self to skip — the wrap captures everything. Better than
+    // swallowing a legitimate 5xx on a config typo.
+    expect(isSelfRequest("https://api.cross-deck.com/v1/events", null)).toBe(false);
+    expect(isSelfRequest("https://api.cross-deck.com/v1/events", undefined)).toBe(false);
+  });
+
+  it("returns false on a malformed request URL (SDK only ever uses absolute URLs)", () => {
+    expect(isSelfRequest("not-a-url", "api.cross-deck.com")).toBe(false);
+    expect(isSelfRequest("", "api.cross-deck.com")).toBe(false);
+    expect(isSelfRequest("/relative/path", "api.cross-deck.com")).toBe(false);
   });
 });
