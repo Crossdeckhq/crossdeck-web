@@ -2,6 +2,19 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.2] — 2026-05-26
+
+Patch — second npm publish pipeline fix. v1.4.1 fixed the Node 24
+`navigator` test mutation, but the `prepublishOnly` hook still ran
+the Playwright e2e suite at `npm publish` time even though the
+publish workflow doesn't install Chromium. Removed `test:e2e` from
+`prepublishOnly` — the publish workflow runs lint + unit tests +
+build + size budget which covers everything except the
+browser-bound e2e (which requires Playwright setup the publish
+workflow doesn't provide; e2e still runs in monorepo CI). v1.4.2
+is the first 1.4.x line to actually land on the npm registry.
+**No SDK code changes vs v1.4.0 / v1.4.1**.
+
 ## [1.4.1] — 2026-05-26
 
 Patch — Node 24 compatibility fix for the npm publish pipeline. The
