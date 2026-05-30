@@ -86,13 +86,15 @@ That's the full happy path.
 
 | Event | When |
 |---|---|
-| `session.started` | On boot. Carries `sessionId`. |
-| `session.ended` | On `pagehide` / `beforeunload`, OR when returning to a tab after >30 min idle. Carries `sessionId` and `durationMs`. |
+| `session.started` | When a **new** session begins — first visit, or the first page load after >30 min of inactivity. A session resumed across a page navigation does **not** re-fire it. Carries `sessionId`. |
+| `session.ended` | On a real session end only: >30 min of inactivity, or an explicit `Crossdeck.stop()`. Carries `sessionId` and `durationMs`. |
 | `page.viewed` | On initial load + every SPA navigation (`history.pushState`, `replaceState`, `popstate`). Carries `path`, `url`, `search`, `hash`, `title`, `referrer`. |
 
-Every event — auto-tracked and developer-emitted — is enriched with the device-info payload below. Quick tab switches (Cmd-Tab, switching browser tabs) don't end the session — only real closes do, matching GA4's session-window convention.
+Every event — auto-tracked and developer-emitted — is enriched with the device-info payload below.
 
-**Per-session acquisition (v0.6.0+):** when a session starts the SDK reads `window.location.search` and `document.referrer` and captures `utm_source`, `utm_medium`, `utm_campaign`, `utm_content`, `utm_term`, plus `referrer`. Non-empty values are auto-attached to every subsequent event of that session — first-touch attribution stays pinned to the entry URL even after SPA route changes strip the params away. A new session (>30 min idle) re-reads the URL.
+**Sessions survive page loads (v1.6.0+).** A session is a *visit*, not a page. The SDK persists the session (id, start time, last-activity time, first-touch acquisition) to the same storage as identity, so a full-page navigation on a multi-page site **resumes the same session** rather than starting a new one. The window is a rolling 30-minute inactivity timer bumped by every tracked event (auto or custom); only real 30-min inactivity or `Crossdeck.stop()` ends it. A page unload (`pagehide`/`beforeunload`) is treated as a navigation, not an end. Quick tab switches (Cmd-Tab) likewise don't end the session — matching GA4's session-window convention. Continuity is same-origin; cross-subdomain stitching is on the roadmap. With `persistIdentity: false` (or a `MemoryStorage` adapter) the session is in-memory only and resets per page.
+
+**Per-session acquisition (v0.6.0+):** when a session starts the SDK reads `window.location.search` and `document.referrer` and captures `utm_source`, `utm_medium`, `utm_campaign`, `utm_content`, `utm_term`, plus `referrer`. Non-empty values are auto-attached to every subsequent event of that session — first-touch attribution stays pinned to the entry URL even after SPA route changes strip the params away, and now stays pinned across full-page navigations within the session too. A new session (>30 min idle) re-reads the URL.
 
 ## Auto-attached device info
 

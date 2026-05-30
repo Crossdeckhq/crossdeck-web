@@ -49,6 +49,18 @@ export interface HttpClientConfig {
    * bad network can lock up the entire event queue.
    */
   timeoutMs?: number;
+  /**
+   * Contract verifier hook — fired AFTER `crossdeckErrorFromResponse`
+   * has built the typed error from a non-OK wire envelope, just BEFORE
+   * the throw. Lets the SDK's verifier layer observe the parsed envelope
+   * shape (type / code / request_id / http status) and assert the
+   * `error-envelope-shape` contract on every real failure, not just at
+   * boot. Synchronous + best-effort: any throw from the hook is swallowed
+   * so a buggy verifier can NEVER replace the customer's real error with
+   * a verifier-internal one. See sdks/web/src/_contract-verifiers.ts
+   * runOnErrorParse for the consumer end of this wire.
+   */
+  onErrorParsed?: (err: CrossdeckError) => void;
 }
 
 export const DEFAULT_TIMEOUT_MS = 15_000;
@@ -173,7 +185,16 @@ export class HttpClient {
     }
 
     if (!response.ok) {
-      throw await crossdeckErrorFromResponse(response);
+      const parsed = await crossdeckErrorFromResponse(response);
+      // Fire the contract-verifier hook BEFORE the throw so the
+      // verifier sees every real wire envelope, not a sanitised
+      // replay. Wrapped in try/catch so a buggy verifier can never
+      // replace the customer's authentic error with one of our own.
+      // The verifier layer is observability, not control flow.
+      if (this.config.onErrorParsed) {
+        try { this.config.onErrorParsed(parsed); } catch { /* swallow */ }
+      }
+      throw parsed;
     }
 
     // 204 No Content / OPTIONS-like — return undefined cast as T (callers

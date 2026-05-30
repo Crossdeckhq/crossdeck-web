@@ -28,6 +28,7 @@
  */
 
 import { randomChars } from "./identity";
+import type { KeyValueStorage } from "./types";
 
 export interface AutoTrackConfig {
   sessions: boolean;
@@ -63,14 +64,47 @@ export const DEFAULT_AUTO_TRACK: AutoTrackConfig = {
   errors: true,
 };
 
-/** Reopen as a new session if the tab was hidden longer than this. */
+/**
+ * Reopen as a NEW session once activity has been idle this long — the
+ * 30-min rolling-inactivity window GA4 / Mixpanel use. Applies both
+ * in-page (tab hidden → returns >30min later) AND across page loads (the
+ * SDK re-installs on every navigation of a multi-page site; if the stored
+ * session's last activity is within this window we RESUME it instead of
+ * minting a new one). Without the cross-page-load half, every navigation
+ * ended one session and started another at the same instant.
+ */
 const SESSION_RESUME_THRESHOLD_MS = 30 * 60 * 1000;
 
+/** Default storage key for the persisted session continuity record. */
+const SESSION_STORAGE_KEY = "crossdeck:session";
+
+/**
+ * Throttle for flushing the rolling last-activity time to storage. The
+ * in-memory value stays exact; we just avoid a storage write on every
+ * single event. pagehide does a final forced flush so the last activity
+ * before a navigation is never lost.
+ */
+const ACTIVITY_PERSIST_THROTTLE_MS = 5_000;
+
 type TrackFn = (name: string, properties?: Record<string, unknown>) => void;
+
+/**
+ * The slice of session state we persist across page loads. Kept minimal:
+ * enough to RESUME the same visit (id + first-touch acquisition) and to
+ * decide whether the resume window is still open (lastActivityAt).
+ */
+interface StoredSession {
+  id: string;
+  startedAt: number;
+  lastActivityAt: number;
+  acquisition: SessionAcquisition;
+}
 
 interface SessionState {
   sessionId: string;
   startedAt: number;
+  /** Rolling timestamp of the last tracked event — drives the 30-min window. */
+  lastActivityAt: number;
   hiddenAt: number | null;
   endedSent: boolean;
   /**
@@ -135,6 +169,18 @@ export class AutoTracker {
   private session: SessionState | null = null;
   private cleanups: Array<() => void> = [];
   /**
+   * Persistent storage for session continuity across page loads. Uses
+   * the SAME adapter as the rest of the SDK (localStorage by default,
+   * MemoryStorage when identity persistence is disabled for consent) so
+   * session persistence honours the same privacy posture as identity.
+   * Null only if no adapter was supplied → session is in-memory only
+   * (per-page), the pre-fix behaviour.
+   */
+  private readonly storage: KeyValueStorage | null;
+  private readonly sessionKey: string;
+  /** Last time we flushed lastActivityAt to storage (throttle gate). */
+  private lastPersistAt = 0;
+  /**
    * Stable per-page-view identifier. Minted at every `page.viewed`
    * emission and attached to every subsequent event until the next
    * `page.viewed`. Lets dashboards correlate "user clicked X" to
@@ -149,7 +195,11 @@ export class AutoTracker {
   constructor(
     private readonly cfg: AutoTrackConfig,
     private readonly track: TrackFn,
-  ) {}
+    opts?: { storage?: KeyValueStorage; storageKey?: string },
+  ) {
+    this.storage = opts?.storage ?? null;
+    this.sessionKey = opts?.storageKey ?? SESSION_STORAGE_KEY;
+  }
 
   install(): void {
     if (!isBrowserSafe()) return;
@@ -166,6 +216,10 @@ export class AutoTracker {
     if (this.session && !this.session.endedSent) {
       this.emitSessionEnd();
     }
+    // Explicit teardown is a real end (unlike a navigation's pagehide) —
+    // clear the persisted session so the next start() begins fresh
+    // rather than resuming a session the host deliberately stopped.
+    this.clearStoredSession();
     this.session = null;
   }
 
@@ -180,7 +234,24 @@ export class AutoTracker {
     // mints a fresh id (see installPageViewTracking's `fire()`).
     this.pageviewId = null;
     this.session = this.startNewSession();
+    this.persistSession();
     this.emitSessionStart();
+  }
+
+  /**
+   * Keep the rolling session window alive. Called by the host on EVERY
+   * tracked event (auto or custom) so any activity — not just the
+   * pageviews/clicks AutoTracker emits itself — pushes the 30-min idle
+   * boundary forward. In-memory time is updated exactly; the storage
+   * flush is throttled (pagehide forces a final flush).
+   */
+  markActivity(): void {
+    if (!this.session) return;
+    const now = Date.now();
+    this.session.lastActivityAt = now;
+    if (now - this.lastPersistAt >= ACTIVITY_PERSIST_THROTTLE_MS) {
+      this.persistSession();
+    }
   }
 
   /** Exposed for inspection/tests — returns the current sessionId (or null if not in a session). */
@@ -208,32 +279,60 @@ export class AutoTracker {
 
   // ---------- sessions ----------
   private installSessionTracking(): void {
-    this.session = this.startNewSession();
-    this.emitSessionStart();
+    const now = Date.now();
+    const stored = this.readStoredSession();
+    if (stored && now - stored.lastActivityAt < SESSION_RESUME_THRESHOLD_MS) {
+      // RESUME the in-flight visit across a full page load. A multi-page
+      // site re-installs the SDK on every navigation; minting a new
+      // session here (the old behaviour) split one visit into one session
+      // per page, each ended at the same instant the next began — the
+      // "session ends and the next begins at 05:18:11" bug. Reuse the id
+      // + first-touch acquisition; do NOT emit a second session.started.
+      this.session = {
+        sessionId: stored.id,
+        startedAt: stored.startedAt,
+        lastActivityAt: now,
+        hiddenAt: null,
+        endedSent: false,
+        acquisition: stored.acquisition,
+      };
+      this.persistSession();
+    } else {
+      // Genuinely new visit (no stored session, or the 30-min window
+      // lapsed). A stale stored session is simply superseded — we do NOT
+      // emit a back-dated session.ended for it, which would land at the
+      // new session's timestamp and corrupt the old session's duration;
+      // the dashboard infers the prior session's end from its last event.
+      this.session = this.startNewSession();
+      this.persistSession();
+      this.emitSessionStart();
+    }
 
     const onVisChange = (): void => {
       if (!this.session) return;
       const doc = (globalThis as { document: Document }).document;
       if (doc.visibilityState === "hidden") {
         // Quick tab switches and Cmd-Tabs land here, but the page is
-        // still alive. Record the time; do NOT emit session.ended yet.
-        // pagehide / beforeunload are the canonical end signals
-        // (mobile backgrounding fires pagehide reliably). If we ended
-        // here, returning to the tab seconds later would always start
-        // a new session — defeating the 30-min session-window intent.
+        // still alive. Record the time and flush, but do NOT emit
+        // session.ended — returning seconds later must continue the same
+        // session (the 30-min window intent). The flush keeps the
+        // last-activity time accurate for a next-visit resume if the tab
+        // is closed rather than returned to.
         this.session.hiddenAt = Date.now();
+        this.persistSession();
       } else if (doc.visibilityState === "visible") {
-        const hiddenFor = this.session.hiddenAt
-          ? Date.now() - this.session.hiddenAt
-          : 0;
-        if (hiddenFor >= SESSION_RESUME_THRESHOLD_MS) {
-          // Long idle → end the previous session, start a fresh one.
-          // Null pageviewId on session boundary (audit P1 #16) so any
-          // event between resume and the next page.viewed doesn't
-          // ship the previous session's attribution.
+        // Decide on real inactivity, not just time-hidden: lastActivityAt
+        // is the last tracked event, so this is the true idle gap.
+        const idleFor = Date.now() - this.session.lastActivityAt;
+        if (idleFor >= SESSION_RESUME_THRESHOLD_MS) {
+          // Long idle → the previous session genuinely ended. Emit its
+          // end, then open a fresh one. Null pageviewId on the boundary
+          // (audit P1 #16) so any event between resume and the next
+          // page.viewed doesn't ship the previous session's attribution.
           this.emitSessionEnd();
           this.pageviewId = null;
           this.session = this.startNewSession();
+          this.persistSession();
           this.emitSessionStart();
         } else {
           // Quick return — same session continues.
@@ -242,7 +341,13 @@ export class AutoTracker {
       }
     };
 
-    const onPageHide = (): void => this.emitSessionEnd();
+    // A page unload is NOT a session end — on a multi-page site it's a
+    // navigation, and the next page resumes this same session. Flush the
+    // final activity time so the next load's resume-window check is
+    // accurate. The session ends only on real 30-min inactivity or an
+    // explicit uninstall(). (This is what stopped the per-navigation
+    // session.ended / session.started churn.)
+    const onPageHide = (): void => this.persistSession();
 
     const w = (globalThis as { window: Window }).window;
     const doc = (globalThis as { document: Document }).document;
@@ -260,13 +365,75 @@ export class AutoTracker {
   }
 
   private startNewSession(): SessionState {
+    const now = Date.now();
     return {
       sessionId: mintSessionId(),
-      startedAt: Date.now(),
+      startedAt: now,
+      lastActivityAt: now,
       hiddenAt: null,
       endedSent: false,
       acquisition: captureAcquisition(),
     };
+  }
+
+  /**
+   * Read the persisted session continuity record. Returns null on no
+   * storage, no record, malformed JSON, or a record missing its required
+   * fields — every failure degrades to "no session to resume", which is
+   * the safe (start-fresh) path.
+   */
+  private readStoredSession(): StoredSession | null {
+    if (!this.storage) return null;
+    try {
+      const raw = this.storage.getItem(this.sessionKey);
+      if (!raw) return null;
+      const p = JSON.parse(raw) as Partial<StoredSession>;
+      if (
+        !p ||
+        typeof p.id !== "string" ||
+        typeof p.startedAt !== "number" ||
+        typeof p.lastActivityAt !== "number"
+      ) {
+        return null;
+      }
+      return {
+        id: p.id,
+        startedAt: p.startedAt,
+        lastActivityAt: p.lastActivityAt,
+        acquisition:
+          p.acquisition && typeof p.acquisition === "object"
+            ? (p.acquisition as SessionAcquisition)
+            : EMPTY_ACQUISITION,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Flush the current session to storage. No-op without storage/session. */
+  private persistSession(): void {
+    if (!this.storage || !this.session) return;
+    this.lastPersistAt = Date.now();
+    try {
+      const rec: StoredSession = {
+        id: this.session.sessionId,
+        startedAt: this.session.startedAt,
+        lastActivityAt: this.session.lastActivityAt,
+        acquisition: this.session.acquisition,
+      };
+      this.storage.setItem(this.sessionKey, JSON.stringify(rec));
+    } catch {
+      // Quota / blocked storage — session degrades to in-memory only.
+    }
+  }
+
+  private clearStoredSession(): void {
+    if (!this.storage) return;
+    try {
+      this.storage.removeItem(this.sessionKey);
+    } catch {
+      // ignore
+    }
   }
 
   private emitSessionStart(): void {
@@ -530,6 +697,118 @@ function isInsidePasswordField(el: Element): boolean {
   return false;
 }
 
+// Tags whose text IS a control's own caption when they sit directly
+// inside it — buttons/links routinely wrap their label in one of these.
+const INLINE_LABEL_TAGS = new Set([
+  "span", "b", "strong", "em", "i", "small", "mark", "u", "label",
+  "abbr", "time", "bdi", "cite", "code", "kbd", "q", "sub", "sup",
+]);
+
+// Subtrees whose text is decorative (icon internals / styling) and must
+// never leak into a label.
+const NON_LABEL_SUBTREES = new Set(["svg", "style", "script", "noscript"]);
+
+// A clicked control that CONTAINS one of these is a wrapper — around
+// other controls (a card whose whole body is one big <a>, holding three
+// sign-in buttons) or around a content block (a hero <a> wrapping a
+// heading + paragraph). Its full textContent is a mash, not a label.
+// Headings count because a heading inside a clickable is the signature of
+// "this is a content block, not a button".
+const CONTAINER_MARKERS =
+  "a[href], button, input, select, textarea, [role='button'], [role='link'], h1, h2, h3, h4, h5, h6";
+
+const HEADING_SELECTOR = "h1, h2, h3, h4, h5, h6";
+
+/** Collapse whitespace runs and trim. " Sign\n up " → "Sign up". */
+function collapseWs(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Text of an element with WORD BOUNDARIES preserved across nested
+ * elements. `el.textContent` concatenates text nodes with nothing between
+ * them, so `<h1>…só link</h1><p>Portfolio…` fuses into "só linkPortfolio"
+ * and `<button>Log in</button><button>Continue…` into "Log inContinue…".
+ * We insert a space at every element boundary, skip decorative subtrees
+ * (icons), then collapse — so the label reads as written, never fused.
+ */
+function boundaryText(el: Element): string {
+  let out = "";
+  const walk = (node: Node): void => {
+    const kids = node.childNodes;
+    for (let i = 0; i < kids.length; i++) {
+      const child = kids[i];
+      if (!child) continue;
+      if (child.nodeType === 3 /* TEXT_NODE */) {
+        out += child.textContent || "";
+      } else if (child.nodeType === 1 /* ELEMENT_NODE */) {
+        if (NON_LABEL_SUBTREES.has((child as Element).tagName.toLowerCase())) continue;
+        out += " ";
+        walk(child);
+        out += " ";
+      }
+    }
+  };
+  walk(el);
+  return collapseWs(out);
+}
+
+/**
+ * The element's OWN label — immediate text nodes plus the text of inline
+ * label wrappers (<span> etc.) directly inside it. Deliberately does NOT
+ * descend into block or interactive children, so a wrapper's nested
+ * controls/headings never leak in. "" when the element carries no label
+ * of its own.
+ */
+function directLabel(el: Element): string {
+  let out = "";
+  const kids = el.childNodes;
+  for (let i = 0; i < kids.length; i++) {
+    const child = kids[i];
+    if (!child) continue;
+    if (child.nodeType === 3 /* TEXT_NODE */) {
+      out += " " + (child.textContent || "");
+    } else if (
+      child.nodeType === 1 /* ELEMENT_NODE */ &&
+      INLINE_LABEL_TAGS.has((child as Element).tagName.toLowerCase())
+    ) {
+      out += " " + boundaryText(child as Element);
+    }
+  }
+  return collapseWs(out);
+}
+
+/**
+ * Resolve the visible label for a clicked control WITHOUT mashing nested
+ * controls or content blocks together.
+ *
+ * - A "simple" control — no nested interactive element, no nested heading
+ *   — yields its boundary-spaced text. Covers the everyday case:
+ *   `<button>Sign up</button>`, `<a>Pricing</a>`,
+ *   `<button><svg/><span>Save</span></button>` → "Save".
+ * - A "container" — a control wrapping OTHER controls or a content block —
+ *   would otherwise collapse to "Log inContinue with GoogleContinue with
+ *   Apple…" or "Tudo que você é,em um só link.Portfolio…". For these we
+ *   use, in order: the element's own direct label → the first heading
+ *   inside it (the human-recognisable name of the block) → "". Returning
+ *   "" lets extractText fall through to title / img alt / svg title, and
+ *   finally to the selector — honest, not garbage.
+ */
+function visibleLabel(el: Element): string {
+  const isContainer = el.querySelector(CONTAINER_MARKERS) !== null;
+  if (!isContainer) return boundaryText(el);
+
+  const direct = directLabel(el);
+  if (direct) return direct;
+
+  const heading = el.querySelector(HEADING_SELECTOR);
+  if (heading) {
+    const h = boundaryText(heading);
+    if (h) return h;
+  }
+  return "";
+}
+
 /**
  * Compute the best human-readable label for a clicked element.
  *
@@ -592,8 +871,15 @@ function extractText(el: Element): string {
     if (t) return t;
   }
 
-  // 5. Visible textContent — the everyday case.
-  const text = clean(el.textContent || "");
+  // 5. Visible text — the element's OWN label, never a mash of nested
+  //    controls or content blocks. extractText used to return
+  //    clean(el.textContent) here, which on a control that WRAPS other
+  //    things collapses the whole subtree into one string:
+  //    "Log inContinue with GoogleContinue with Apple…" (an auth card
+  //    around three buttons) or "Tudo que você é,em um só link.Portfolio
+  //    …" (a hero <a> around an <h1>+<p>+<ul>). visibleLabel() resolves a
+  //    faithful single-control label instead. See its doc comment.
+  const text = visibleLabel(el);
   if (text) return text;
 
   // 6. Title attribute (tooltip-style accessible name).

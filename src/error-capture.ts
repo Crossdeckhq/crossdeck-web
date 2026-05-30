@@ -137,19 +137,58 @@ export const DEFAULT_ERROR_CAPTURE: ErrorCaptureConfig = {
     "ResizeObserver loop completed with undelivered notifications",
     "Non-Error promise rejection captured",
     // NOTE: We deliberately do NOT drop cross-origin "Script error."
-    // events here. They used to be silently filtered as noise, but
-    // silent drops are the opposite of "developer sleeps well at
-    // night". We now capture them with a clear label and the
-    // `cross_origin` tag so the dashboard surfaces them as a
-    // distinct, actionable category (the fix is always the same —
-    // add `crossorigin="anonymous"` to the script tag + CORS
-    // headers on the script's origin). Apps that genuinely want
-    // them muted can re-add "Script error" to ignoreErrors via
-    // init config.
+    // events here. The actionability principle (see denyUrls
+    // comment below) draws the line at "developer cannot act":
+    // cross-origin CORS opacity HAS a real, code-shaped fix (add
+    // `crossorigin="anonymous"` to the script tag + CORS headers
+    // on the script's origin). The dashboard surfaces these with a
+    // `cross_origin` tag pointing at that fix. Apps that genuinely
+    // want them muted can re-add "Script error" to ignoreErrors
+    // via init config.
   ],
   allowUrls: [],
   denyUrls: [
-    // Common third-party extensions that pollute error streams.
+    // The actionability principle
+    // ---------------------------
+    // Crossdeck's default philosophy is "classify, don't silently
+    // drop" — surfacing errors the developer can fix is more useful
+    // than hiding them. That's right for cross-origin "Script
+    // error." (real, code-shaped CORS fix) and for plain
+    // application bugs (obviously real).
+    //
+    // It's NOT right for events the developer cannot act on.
+    //   - A user's installed browser extension throwing inside
+    //     its own `chrome-extension://` URL: the developer can't
+    //     ship a fix for someone else's extension.
+    //   - An ad blocker preventing `googletagmanager.com` from
+    //     loading: the developer can't unblock the user's blocker.
+    //
+    // Capturing these creates a noise tab that's always non-empty
+    // and never actionable, which trains the dev to ignore the
+    // noise tab — and then the actionable noise (CORS opacity,
+    // etc.) gets ignored along with it. Same lesson as Crossdeck's
+    // "0-2 notifications a week" discipline: a signal that fires
+    // constantly with nothing actionable behind it stops being a
+    // signal.
+    //
+    // So we drop at the source for the unactionable category, and
+    // keep capturing for the actionable category. Same principle
+    // applied to two structurally different inputs — not a new
+    // philosophy.
+    //
+    // The bootstrap list below is the minimum that ships in code.
+    // The full, versioned list arrives at boot via /v1/config —
+    // see `backend/src/lib/error-noise-deny-list.ts`. The SDK
+    // applies the union of (bootstrap + remote), so a freshly-
+    // installed SDK protects users immediately, and remote updates
+    // (new ad-network domains, new pixel hosts) reach every
+    // install without an SDK release.
+    //
+    // The backend Layer-2 classifier
+    // (`backend/src/api/lib/noise-classifier.ts`) is the safety
+    // net for events that slip past these patterns — older SDK
+    // versions in the wild that haven't fetched the remote list
+    // yet, or brand-new patterns the list hasn't named.
     /^chrome-extension:\/\//,
     /^moz-extension:\/\//,
     /^safari-extension:\/\//,

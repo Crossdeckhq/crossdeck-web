@@ -9,6 +9,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { AutoTracker, DEFAULT_AUTO_TRACK, captureAcquisition } from "../src/auto-track";
+import { MemoryStorage } from "../src/storage";
 
 interface RecordedEvent {
   name: string;
@@ -30,8 +31,13 @@ let activeTrackers: AutoTracker[] = [];
 function newTracker(
   cfg: Partial<typeof DEFAULT_AUTO_TRACK>,
   track: (name: string, properties?: Record<string, unknown>) => void,
+  storage?: MemoryStorage,
 ): AutoTracker {
-  const t = new AutoTracker({ ...DEFAULT_AUTO_TRACK, ...cfg }, track);
+  const t = new AutoTracker(
+    { ...DEFAULT_AUTO_TRACK, ...cfg },
+    track,
+    storage ? { storage } : undefined,
+  );
   activeTrackers.push(t);
   return t;
 }
@@ -180,27 +186,37 @@ describe("AutoTracker — session lifecycle", () => {
     expect(ctx.events.find((e) => e.name === "session.ended")).toBeUndefined();
   });
 
-  it("pagehide ends the session with durationMs", () => {
+  it("pagehide does NOT end the session — a navigation is not a session end", () => {
+    // Pre-fix, pagehide/beforeunload emitted session.ended, so every
+    // full-page navigation on a multi-page site ended one session and
+    // the next page started another at the same instant. A page unload
+    // is a navigation, not an end: the session now ends only on real
+    // 30-min inactivity or an explicit uninstall().
     const ctx = makeContext();
     newTracker({}, ctx.track).install();
     ctx.events.length = 0;
     window.dispatchEvent(new Event("pagehide"));
-    const ev = ctx.events.find((e) => e.name === "session.ended");
-    expect(ev).toBeDefined();
-    expect(ev?.properties?.sessionId).toMatch(/^sess_/);
-    expect(typeof ev?.properties?.durationMs).toBe("number");
+    window.dispatchEvent(new Event("beforeunload"));
+    expect(ctx.events.find((e) => e.name === "session.ended")).toBeUndefined();
   });
 
-  it("session.ended is deduplicated when fired by multiple triggers", () => {
+  it("session.ended fires exactly once on uninstall, after pagehide/visibility churn", () => {
+    // pagehide/beforeunload/hidden no longer end the session; the single
+    // real end (explicit uninstall) must still emit exactly one
+    // session.ended, guarded by endedSent.
     const ctx = makeContext();
-    newTracker({}, ctx.track).install();
+    const t = newTracker({}, ctx.track);
+    t.install();
     ctx.events.length = 0;
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
     document.dispatchEvent(new Event("visibilitychange"));
     window.dispatchEvent(new Event("pagehide"));
     window.dispatchEvent(new Event("beforeunload"));
+    t.uninstall();
     const ends = ctx.events.filter((e) => e.name === "session.ended");
     expect(ends.length).toBe(1);
+    expect(ends[0]?.properties?.sessionId).toMatch(/^sess_/);
+    expect(typeof ends[0]?.properties?.durationMs).toBe("number");
   });
 
   it("returning visible after a quick hidden phase reuses the session (no new sessionId)", () => {
@@ -243,6 +259,80 @@ describe("AutoTracker — session lifecycle", () => {
     expect(t.currentPageviewId).toMatch(/^pv_/); // initial page.viewed fired
     t.resetSession();
     expect(t.currentPageviewId).toBeNull();
+  });
+});
+
+// ============================================================
+// Session continuity across full-page navigations. A multi-page site
+// re-installs the SDK on every page; with a persistent store the visit
+// must RESUME as one session, not split into one-session-per-page (each
+// ended at the instant the next began — the journey double-log bug).
+// ============================================================
+describe("AutoTracker — session continuity across page loads", () => {
+  const SESSION_KEY = "crossdeck:session";
+
+  it("resumes the stored session on the next install — no second session.started, same id", () => {
+    const storage = new MemoryStorage();
+    // Page 1.
+    const ctx1 = makeContext();
+    const t1 = newTracker({}, ctx1.track, storage);
+    t1.install();
+    const id1 = t1.currentSessionId;
+    expect(ctx1.events.filter((e) => e.name === "session.started").length).toBe(1);
+
+    // Navigate away — persists, does not end.
+    window.dispatchEvent(new Event("pagehide"));
+
+    // Page 2: a fresh tracker on the SAME storage = same browser, next page.
+    const ctx2 = makeContext();
+    const t2 = newTracker({}, ctx2.track, storage);
+    t2.install();
+
+    expect(t2.currentSessionId).toBe(id1);
+    expect(ctx2.events.some((e) => e.name === "session.started")).toBe(false);
+  });
+
+  it("starts a new session when the stored one is past the 30-min window", () => {
+    const storage = new MemoryStorage();
+    const stale = Date.now() - 31 * 60 * 1000;
+    storage.setItem(SESSION_KEY, JSON.stringify({
+      id: "sess_stale", startedAt: stale - 1000, lastActivityAt: stale, acquisition: {},
+    }));
+    const ctx = makeContext();
+    const t = newTracker({}, ctx.track, storage);
+    t.install();
+    expect(t.currentSessionId).not.toBe("sess_stale");
+    expect(ctx.events.some((e) => e.name === "session.started")).toBe(true);
+  });
+
+  it("a resumed session keeps its first-touch acquisition, ignoring the new page's URL", () => {
+    const storage = new MemoryStorage();
+    window.history.replaceState(null, "", "/?utm_source=first");
+    const t1 = newTracker({}, makeContext().track, storage);
+    t1.install();
+    expect(t1.currentAcquisition.utm_source).toBe("first");
+
+    window.dispatchEvent(new Event("pagehide"));
+    // Next page lands on a different campaign URL — must NOT overwrite the
+    // session's first-touch attribution.
+    window.history.replaceState(null, "", "/page2?utm_source=second");
+    const t2 = newTracker({}, makeContext().track, storage);
+    t2.install();
+    expect(t2.currentAcquisition.utm_source).toBe("first");
+  });
+
+  it("explicit uninstall clears the stored session so the next start is fresh", () => {
+    const storage = new MemoryStorage();
+    const t1 = newTracker({}, makeContext().track, storage);
+    t1.install();
+    const id1 = t1.currentSessionId;
+    t1.uninstall();
+
+    const ctx2 = makeContext();
+    const t2 = newTracker({}, ctx2.track, storage);
+    t2.install();
+    expect(t2.currentSessionId).not.toBe(id1);
+    expect(ctx2.events.some((e) => e.name === "session.started")).toBe(true);
   });
 });
 
@@ -305,5 +395,105 @@ describe("AutoTracker — acquisition capture (v0.6.0)", () => {
     // No install → no session → empty acquisition (not undefined)
     expect(t.currentAcquisition.utm_source).toBe("");
     expect(t.currentAcquisition.referrer).toBe("");
+  });
+});
+
+// ============================================================
+// Click autocapture — label resolution. The bug these guard: a clicked
+// control that WRAPS other controls or a content block used to collapse
+// its whole subtree into one mashed label ("Log inContinue with Google
+// Continue with Apple…", "Tudo que você é,em um só link.Portfolio…").
+// ============================================================
+describe("AutoTracker — click label resolution", () => {
+  // Fire a real click on `el` and return the element.clicked props.
+  function clickAndRead(el: Element, ctx: ReturnType<typeof makeContext>) {
+    el.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+    return ctx.events.find((e) => e.name === "element.clicked")?.properties;
+  }
+
+  beforeEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("a simple button resolves to its own text", () => {
+    const ctx = makeContext();
+    newTracker({}, ctx.track).install();
+    document.body.innerHTML = `<button id="b">Sign up</button>`;
+    const props = clickAndRead(document.getElementById("b")!, ctx);
+    expect(props?.text).toBe("Sign up");
+  });
+
+  it("icon-and-label button drops the svg and keeps the caption", () => {
+    const ctx = makeContext();
+    newTracker({}, ctx.track).install();
+    document.body.innerHTML =
+      `<button id="b"><svg><title>save icon</title></svg><span>Save</span></button>`;
+    const props = clickAndRead(document.getElementById("b")!, ctx);
+    expect(props?.text).toBe("Save");
+  });
+
+  it("inline label parts are space-joined, never fused", () => {
+    // The "Log inContinue with Google" class of bug: sibling inline text
+    // with no whitespace between the elements.
+    const ctx = makeContext();
+    newTracker({}, ctx.track).install();
+    document.body.innerHTML =
+      `<a id="a" href="/x"><span>Log in</span><span>Sign up</span></a>`;
+    const props = clickAndRead(document.getElementById("a")!, ctx);
+    expect(props?.text).toBe("Log in Sign up");
+    expect(props?.text).not.toContain("inSign");
+  });
+
+  it("a content-block link resolves to its heading, not the whole block", () => {
+    // The "Tudo que você é,em um só link.Portfolio…" bug: a hero <a>
+    // wrapping a heading + paragraph + list.
+    const ctx = makeContext();
+    newTracker({}, ctx.track).install();
+    document.body.innerHTML =
+      `<a id="hero" href="/pt">` +
+      `<h1>Tudo que você é, em um só link</h1>` +
+      `<p>Portfolio, loja, redes sociais.</p>` +
+      `<ul><li>one</li><li>two</li></ul>` +
+      `</a>`;
+    const props = clickAndRead(document.querySelector("#hero h1")!, ctx);
+    expect(props?.text).toBe("Tudo que você é, em um só link");
+    expect(props?.text).not.toContain("Portfolio");
+  });
+
+  it("a wrapper around multiple controls does not mash their labels", () => {
+    // The actionable ancestor is the role=button wrapper; its descendant
+    // buttons must not be concatenated into the label.
+    const ctx = makeContext();
+    newTracker({}, ctx.track).install();
+    document.body.innerHTML =
+      `<div id="card" role="button">` +
+      `<button>Continue with Google</button>` +
+      `<button>Continue with Apple</button>` +
+      `</div>`;
+    const props = clickAndRead(document.getElementById("card")!, ctx);
+    // No clean own-label → falls through to selector; text is absent, and
+    // critically never the mashed concatenation.
+    expect(props?.text ?? "").not.toContain("Continue with GoogleContinue");
+    expect(props?.text ?? "").not.toContain("Continue with Apple");
+  });
+
+  it("clicking a control inside the wrapper resolves to that control", () => {
+    // The realistic path: the click lands ON one button; closestActionable
+    // stops at it, so the label is clean.
+    const ctx = makeContext();
+    newTracker({}, ctx.track).install();
+    document.body.innerHTML =
+      `<div role="button"><button id="g">Continue with Google</button></div>`;
+    const props = clickAndRead(document.getElementById("g")!, ctx);
+    expect(props?.text).toBe("Continue with Google");
+  });
+
+  it("aria-label still wins over descendant text", () => {
+    const ctx = makeContext();
+    newTracker({}, ctx.track).install();
+    document.body.innerHTML =
+      `<button id="b" aria-label="Close dialog"><span>×</span></button>`;
+    const props = clickAndRead(document.getElementById("b")!, ctx);
+    expect(props?.text).toBe("Close dialog");
   });
 });

@@ -2,6 +2,49 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] — 2026-05-30
+
+Minor — two autocapture fidelity fixes. No public API change; event
+emission behaviour changes as described, so read before upgrading if you
+have downstream logic keyed on `session.ended` timing.
+
+**Sessions now survive full-page navigations.** Session state was
+in-memory only, so on a multi-page site (where the SDK re-installs on
+every navigation) one visit was split into a separate session per page —
+each `session.ended` on `pagehide` landing at the same instant the next
+page's `session.started` fired. Sessions are now persisted (id, start,
+last-activity, first-touch acquisition) to the same storage adapter as
+identity and **resumed** across page loads within a rolling 30-minute
+inactivity window.
+
+- `session.started` no longer fires on a resumed page load — only on a
+  genuinely new session (first visit, or first load after >30 min idle).
+- `session.ended` no longer fires on `pagehide` / `beforeunload` (a
+  navigation is not a session end). It fires only on real 30-min
+  inactivity or an explicit `Crossdeck.stop()`.
+- The inactivity window is bumped by every tracked event (auto or
+  custom), not just pageviews/clicks.
+- Honours consent posture: with `persistIdentity: false` or a
+  `MemoryStorage` adapter, the session is in-memory only (per-page, the
+  prior behaviour).
+- Continuity is same-origin (localStorage); cross-subdomain stitching is
+  not yet handled.
+
+**Click autocapture no longer mashes labels.** A click on a control that
+wraps other controls or a content block (a card around several buttons, a
+hero `<a>` around a heading + paragraph) used to collapse the whole
+subtree into one string — `"Log inContinue with GoogleContinue with
+Apple…"`, `"Tudo que você é,em um só link.Portfolio…"`. The resolver now
+returns the control's own label (word boundaries preserved, decorative
+`svg`/`style`/`script` skipped), or for a wrapper its direct label / the
+first heading inside it, falling through to the selector rather than a
+concatenation. Attribute precedence (`data-*` → aria → value → text →
+title → img/svg) is unchanged.
+
+Bundle-size budget for the core bundles raised 55 → 58 KB gzipped (ESM +
+CJS) to fit the ~1 KB of new code; react/vue/UMD bundles unchanged and
+still under budget.
+
 ## [1.5.1] — 2026-05-27
 
 `crossdeck.contract_failed` is now single-fire to a dedicated

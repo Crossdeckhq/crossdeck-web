@@ -5,11 +5,21 @@
  *   1. Send a payload whose keys are exactly the allowed-fields set
  *      (required ∪ optional) from
  *      contracts/diagnostics/contract-failed-payload-schema-lock.json.
- *   2. NEVER go through the customer's track() pipeline — the
- *      reliability telemetry is single-fire to a dedicated endpoint
- *      hardcoded in _diagnostic-telemetry.ts.
+ *   2. Route to `/v1/events` (the same endpoint customer cd.track()
+ *      uses) UNDER THE HARDCODED RELIABILITY PUBLISHABLE KEY — so
+ *      the event lands in the Crossdeck reliability project's events
+ *      warehouse, NOT in the customer's project. The hardcoded key is
+ *      the structural guarantee that customer-side telemetry stays
+ *      isolated from CD-side reliability telemetry.
  *   3. NEVER include any forbidden field even if the caller's input
  *      were to carry one.
+ *
+ * Pre-2026-05-28 the endpoint was `/v1/sdk/diagnostic` (a CD-specific
+ * write into a top-level `sdkDiagnostics` collection). That collection
+ * had no dashboard surface, so failures piled up invisibly. The new
+ * routing reuses the customer-events pipeline — failures appear in
+ * the Crossdeck project's events-explorer / event-breakdown / alerts
+ * like any other custom event.
  *
  * The schema-lock contract is the structural defence behind the
  * independent-controller flow in Privacy Policy §6 — these tests
@@ -20,6 +30,7 @@ import { describe, it, expect } from "vitest";
 import {
   DIAGNOSTIC_TELEMETRY_ALLOWED_KEYS,
   DIAGNOSTIC_TELEMETRY_ENDPOINT,
+  DIAGNOSTIC_TELEMETRY_PUBLISHABLE_KEY,
   filterDiagnosticPayload,
 } from "../src/_diagnostic-telemetry";
 
@@ -96,14 +107,26 @@ describe("contract-failed schema-lock — Web", () => {
       expect(contract.allowedFields.optional).toContain("verification_phase");
     });
 
-    it("does not enter customer track pipeline", () => {
-      // Defensive: the endpoint URL is hardcoded to the reliability
-      // path. If anyone changes _diagnostic-telemetry to point at the
-      // customer events pipeline, this test fails.
+    it("routes to /v1/events under the hardcoded reliability key", () => {
+      // Defensive: contract failures ride the customer-events pipeline
+      // SHAPE (POST /v1/events with { events: [...] }) but auth under
+      // the hardcoded Crossdeck reliability publishable key. The
+      // backend resolves that key to the Crossdeck reliability project
+      // — failures land in CD's project's warehouse, not the
+      // customer's, even though they travel through the same endpoint.
+      // If anyone strips the hardcoded key (or repoints to a customer-
+      // bearing HTTP client), customer-side reliability data would
+      // leak into the customer's warehouse — this test fails first.
       expect(DIAGNOSTIC_TELEMETRY_ENDPOINT).toBe(
-        "https://api.cross-deck.com/v1/sdk/diagnostic",
+        "https://api.cross-deck.com/v1/events",
       );
-      expect(DIAGNOSTIC_TELEMETRY_ENDPOINT).not.toContain("/v1/events");
+      expect(DIAGNOSTIC_TELEMETRY_PUBLISHABLE_KEY).toMatch(/^cd_pub_live_/);
+      // The reliability key is a HARDCODED LITERAL — proves auth never
+      // resolves through customer configuration. The exact value is
+      // pinned so a key-rotation is a visible diff.
+      expect(DIAGNOSTIC_TELEMETRY_PUBLISHABLE_KEY).toBe(
+        "cd_pub_live_9490e7aa029c432abf",
+      );
     });
   });
 });

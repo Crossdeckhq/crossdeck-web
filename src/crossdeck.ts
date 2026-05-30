@@ -58,8 +58,10 @@ import {
   buildFlushIntervalVerifier,
   defaultDebugModeFlag,
   runBootSelfTest,
+  runOnErrorParse,
   runOnIdentify,
   runOnSyncPurchases,
+  runOnTrack,
   type ContractVerifier,
   type VerifierContext,
 } from "./_contract-verifiers";
@@ -279,6 +281,21 @@ export class CrossdeckClient {
       // SDK methods continue to work locally; nothing reaches the
       // server.
       localDevMode,
+      // Contract verifier hot-path hook — fires the `error-envelope-shape`
+      // verifier on every parsed wire error, BEFORE the throw bubbles
+      // back to user code. Centralised here so we don't need a try/catch
+      // around every `await s.http.request(...)` call site downstream.
+      // No-op when the verifier layer is disabled (verifiers === null).
+      onErrorParsed: (err) => {
+        if (this.verifiers && this.verifierReporter && this.verifierCtx) {
+          runOnErrorParse(this.verifiers, this.verifierReporter, this.verifierCtx, {
+            errorType: err.type,
+            errorCode: err.code,
+            requestId: err.requestId ?? null,
+            httpStatus: typeof err.status === "number" ? err.status : 0,
+          });
+        }
+      },
     });
 
     if (localDevMode) {
@@ -439,8 +456,14 @@ export class CrossdeckClient {
     // Auto-tracker boots AFTER state is set so its initial track() calls
     // can resolve identity hints and device-info enrichment correctly.
     if (autoTrack.sessions || autoTrack.pageViews) {
-      const tracker = new AutoTracker(autoTrack, (name, properties) =>
-        this.track(name, properties),
+      const tracker = new AutoTracker(
+        autoTrack,
+        (name, properties) => this.track(name, properties),
+        // Persist session continuity on the SAME adapter as identity, so
+        // a visit survives full-page navigations (multi-page sites
+        // re-install the SDK on every page) and honours the same consent
+        // posture — MemoryStorage when identity persistence is off.
+        { storage: effectiveStorage, storageKey: opts.storagePrefix + "session" },
       );
       this.state.autoTracker = tracker;
       tracker.install();
@@ -1099,6 +1122,12 @@ export class CrossdeckClient {
    * true even before the session's first network round-trip. Returns
    * false only for a genuinely new install that has never completed a
    * getEntitlements(), or for an entitlement past its own validUntil.
+   *
+   * Throws `not_initialized` (CrossdeckError, type
+   * `configuration_error`) if called before `Crossdeck.init()`. The
+   * `useEntitlement` React hook and the Vue composable both swallow
+   * this and return `false`; bare callers must guard for it (or call
+   * after `init()` resolves).
    */
   isEntitled(key: string): boolean {
     const s = this.requireStarted();
@@ -1116,8 +1145,21 @@ export class CrossdeckClient {
    *
    * The listener is invoked AFTER the cache mutates — once after a
    * successful `getEntitlements()` warms it, again after `syncPurchases()`
-   * delivers fresh entitlements, and once on `reset()` to fire the
-   * empty-cache state for logout flows.
+   * delivers fresh entitlements, once on `reset()` to fire the empty-
+   * cache state for logout flows, AND once on `identify()` after the
+   * per-user cache slot rotates and re-hydrates from device storage.
+   *
+   * IMPORTANT — the `identify()` fire is a TRAP if you treat it as
+   * authoritative network state. `identify()` does NOT fetch entitlements;
+   * it switches the per-user cache slot and rehydrates from device
+   * storage (which is empty for a brand-new install, and last-known-good
+   * — possibly stale — for a returning user). A listener that gates a
+   * paywall on the first fire after an identity switch will read
+   * `false` for a paying customer on a fresh device and let them past
+   * the gate as free. The network-truth fire is the one that follows
+   * the next `getEntitlements()` resolution. Either call
+   * `getEntitlements()` explicitly after `identify()`, or have your
+   * gating code tolerate the empty-then-populated transition.
    *
    * It is NOT invoked synchronously on subscribe. Callers that need
    * the current state should read it via `isEntitled()` / `listEntitlements()`
@@ -1276,6 +1318,11 @@ export class CrossdeckClient {
     //   5. Caller-supplied properties (sanitised)
     // The order is intentional: developer-supplied data is most
     // authoritative, so it overrides anything the SDK auto-attached.
+    // Any tracked event — auto or custom — is activity: push the rolling
+    // 30-min session window forward so a user who interacts via custom
+    // events (not just pageviews/clicks) keeps one continuous session.
+    s.autoTracker?.markActivity();
+
     const enriched: EventProperties = { ...s.deviceInfo };
     const sessionId = s.autoTracker?.currentSessionId;
     if (sessionId) enriched.sessionId = sessionId;
@@ -1336,6 +1383,48 @@ export class CrossdeckClient {
     };
     Object.assign(event, this.identityHintForEvent());
     s.events.enqueue(event);
+
+    // ────────────────────────────────────────────────────────────────
+    // Hot-path verifier: `super-property-merge-precedence` runs AFTER
+    // enqueue so the merged properties reflect EXACTLY what the queue
+    // accepted. The observation carries the three input layers
+    // separately + the merged result so the verifier can prove
+    // caller > super > device precedence on every real track() call,
+    // not just at boot. PASS prints to debug console iff
+    // `logVerifierResults: true`; FAIL prints at WARN + fires
+    // `reportContractFailure(...)` to the reliability channel.
+    // Cheap short-circuit when `disableContractAssertions: true`.
+    //
+    // mergedProperties is observed PRE-SCRUB (`enriched`), not POST-
+    // SCRUB (`finalProperties`). The contract enforced here is
+    // "device < super < caller" — i.e., which LAYER's value wins per
+    // key. PII scrub runs AFTER merge and intentionally mutates
+    // strings (redacts emails, IPs, card numbers) and re-clones
+    // arrays + plain objects. Strict-equal vs `finalProperties`
+    // therefore produces false positives on any caller-supplied
+    // compound value: `caller.frames === finalProperties.frames` is
+    // `false` because scrub's `Array.map` returns a fresh array, even
+    // when contents are unchanged. Founder caught this on
+    // 2026-05-28 — a real `crossdeck.error` track() carrying
+    // `frames: [...]` fired the hot-path FAIL on
+    // `super-property-merge-precedence`, masking real bugs in the
+    // dashboard. Scrub correctness is verified separately; this
+    // verifier's job is solely merge-layer precedence.
+    // ────────────────────────────────────────────────────────────────
+    if (this.verifiers && this.verifierReporter && this.verifierCtx) {
+      // Cast the four input layers to the verifier's open
+      // Record<string, unknown> view. DeviceInfo / EventProperties are
+      // narrowed-string-key records at runtime; the verifier only
+      // reads keys/values, never writes, so the widen is sound. Done
+      // here, not in the verifier signature, so the SDK call site
+      // keeps the strictly-typed source values for refactors.
+      runOnTrack(this.verifiers, this.verifierReporter, this.verifierCtx, {
+        callerProperties: validation.properties as Record<string, unknown>,
+        superProperties: supers as Record<string, unknown>,
+        deviceProperties: s.deviceInfo as unknown as Record<string, unknown>,
+        mergedProperties: enriched as Record<string, unknown>,
+      });
+    }
 
     // ----- Breadcrumb emission -----
     // Every analytics event becomes a breadcrumb so error reports
@@ -1638,6 +1727,30 @@ export class CrossdeckClient {
       },
       events: s.events.getStats(),
     };
+  }
+
+  /**
+   * The stable reference to hand Stripe at checkout so the resulting
+   * purchase attributes to THIS person. Stamp it on the Checkout Session
+   * as `metadata.crossdeck_ref` (see docs/connect-stripe) — the platform
+   * webhook reads it back, validates it, and attaches the subscription to
+   * the right customer instead of stranding it on an anonymous record.
+   *
+   * Returns the strongest identifier the SDK currently holds, in the same
+   * precedence the server resolves by:
+   *   crossdeckCustomerId (cdcust_…) > developerUserId > anonymousId
+   * anonymousId is always present, so this always returns a usable,
+   * non-empty reference — even before identify(). Identify the user as
+   * early as you can, though, so the reference is their stable identity
+   * and not a per-device anon id.
+   */
+  getCheckoutReference(): string {
+    const s = this.requireStarted();
+    return (
+      s.identity.crossdeckCustomerId ??
+      s.developerUserId ??
+      s.identity.anonymousId
+    );
   }
 
   // ---------- private helpers ----------

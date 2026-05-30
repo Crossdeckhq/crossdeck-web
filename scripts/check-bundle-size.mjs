@@ -124,9 +124,20 @@ const distDir = path.resolve(new URL(".", import.meta.url).pathname, "../dist");
 // UMD 26 → 32. Still under every named competitor's ceiling for a
 // one-bundle, three-pillar SDK that ships its own verification
 // dataset AND self-verifies at runtime.
+//
+// Budgets nudged v1.6.0 (May 2026) — two autocapture fidelity fixes.
+// Session continuity across full-page navigations (persist + resume the
+// session through page loads, rolling 30-min inactivity window,
+// markActivity on every tracked event) + click-autocapture label
+// resolution (boundary-aware text extraction, container/heading-aware
+// resolver that stops mashing nested controls into one label). ~1 KB
+// gzipped of real code: core ESM landed at 55.7, core CJS at 56.2 — over
+// the old 55 ceiling. Raise core ESM + CJS 55 → 58 for a ~2 KB margin.
+// react/vue ESM (48.6 / 48.4) and UMD (31.4) stay comfortably under and
+// are left unchanged.
 const BUDGETS = [
-  { file: "index.mjs", maxGzipKb: 55, label: "core ESM" },
-  { file: "index.cjs", maxGzipKb: 55, label: "core CJS" },
+  { file: "index.mjs", maxGzipKb: 58, label: "core ESM" },
+  { file: "index.cjs", maxGzipKb: 58, label: "core CJS" },
   { file: "react.mjs", maxGzipKb: 55, label: "react ESM" },
   { file: "vue.mjs", maxGzipKb: 55, label: "vue ESM" },
   { file: "crossdeck.umd.min.js", maxGzipKb: 32, label: "UMD min" },

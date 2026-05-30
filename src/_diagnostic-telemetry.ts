@@ -39,13 +39,31 @@
 
 import { SDK_NAME, SDK_VERSION } from "./_version";
 
-/** Reliability endpoint URL. Hardcoded — never read from config. */
+/**
+ * Reliability endpoint URL — `/v1/events`, the SAME endpoint customer
+ * `cd.track()` calls use. Contract failures land as ordinary
+ * `crossdeck.contract_failed` events in the Crossdeck reliability
+ * project's events warehouse (resolved via the hardcoded reliability
+ * publishable key below). They surface in the Crossdeck team's
+ * events-explorer alongside any other custom event on that project
+ * — no separate dashboard surface required.
+ *
+ * Pre-2026-05-28 this pointed at `/v1/sdk/diagnostic`, a Crossdeck-
+ * specific endpoint that wrote to a top-level `sdkDiagnostics`
+ * collection. That endpoint has no dashboard renderer; failures
+ * piled up invisibly. Routing through `/v1/events` reuses the
+ * generic custom-event pipeline + UI any customer would have for
+ * their own track() calls.
+ */
 export const DIAGNOSTIC_TELEMETRY_ENDPOINT =
-  "https://api.cross-deck.com/v1/sdk/diagnostic";
+  "https://api.cross-deck.com/v1/events";
 
-/** Reliability project's publishable key. Hardcoded constant. */
+/** Reliability project's publishable key. Hardcoded constant.
+ *  Provisioned 2026-05-27 — Crossdeck reliability workspace
+ *  (app_web_92b2d6a5728a4d). Every customer SDK's contract_failed
+ *  events route here for Crossdeck-on-Crossdeck observability. */
 export const DIAGNOSTIC_TELEMETRY_PUBLISHABLE_KEY =
-  "cd_pub_RELIABILITY_PLACEHOLDER_TO_BE_PROVISIONED";
+  "cd_pub_live_9490e7aa029c432abf";
 
 /**
  * Whether the telemetry is enabled. Disabled while the reliability
@@ -120,7 +138,21 @@ export function sendDiagnosticTelemetry(
   const filtered = filterDiagnosticPayload(payload);
   if (Object.keys(filtered).length === 0) return;
 
-  const body = JSON.stringify(filtered);
+  // Wrap as the /v1/events batch shape — single event per fire,
+  // `name: "crossdeck.contract_failed"`, all schema-lock fields as
+  // properties. The reliability publishable key resolves to the
+  // Crossdeck reliability project server-side; the event lands in
+  // that project's events warehouse and surfaces in its
+  // events-explorer like any other custom event.
+  const body = JSON.stringify({
+    events: [
+      {
+        name: "crossdeck.contract_failed",
+        timestamp: Date.now(),
+        properties: filtered,
+      },
+    ],
+  });
 
   // Browser path: fetch with keepalive so the request survives a
   // page-unload that fires immediately after the call. Node-only
