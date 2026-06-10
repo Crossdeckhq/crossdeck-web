@@ -4,11 +4,13 @@ import { PersistentEventStore } from "../src/event-storage";
 import { MemoryStorage } from "../src/storage";
 import { CrossdeckError } from "../src/errors";
 
-function fakeEvent(name: string): QueuedEvent {
+function fakeEvent(name: string, seq = 0): QueuedEvent {
   return {
     eventId: `evt_${name}_${Math.random().toString(36).slice(2)}`,
     name,
     timestamp: Date.now(),
+    seq,
+    context: {},
     properties: {},
     anonymousId: "anon_test",
   };
@@ -165,6 +167,48 @@ describe("EventQueue", () => {
     // First batch was sent; the 3 new events stay in the buffer
     expect(http.request).toHaveBeenCalledTimes(1);
     expect(q.getStats().buffered).toBe(3);
+  });
+});
+
+// ============================================================
+// Event Envelope v1 — envelopeVersion on the batch body
+// ============================================================
+
+describe("EventQueue — Event Envelope v1 wire shape", () => {
+  it("adds envelopeVersion: 1 to every batch POST body (§1)", async () => {
+    const http = fakeHttp("ok");
+    const q = new EventQueue({
+      http: http as never,
+      batchSize: 1,
+      intervalMs: 10_000,
+      envelope: TEST_ENVELOPE,
+      scheduler: () => () => {},
+    });
+    q.enqueue(fakeEvent("test"));
+    await new Promise((r) => setTimeout(r, 0));
+    const body = http.request.mock.calls[0]![2].body as { envelopeVersion: number };
+    expect(body.envelopeVersion).toBe(1);
+  });
+
+  it("envelopeVersion is distinct from sdk.version in the same body (§1)", async () => {
+    const http = fakeHttp("ok");
+    const q = new EventQueue({
+      http: http as never,
+      batchSize: 1,
+      intervalMs: 10_000,
+      envelope: TEST_ENVELOPE,
+      scheduler: () => () => {},
+    });
+    q.enqueue(fakeEvent("test"));
+    await new Promise((r) => setTimeout(r, 0));
+    const body = http.request.mock.calls[0]![2].body as {
+      envelopeVersion: number;
+      sdk: { version: string };
+    };
+    // envelopeVersion is always the integer 1; sdk.version is a semver string
+    expect(body.envelopeVersion).toBe(1);
+    expect(typeof body.sdk.version).toBe("string");
+    expect(body.sdk.version).not.toBe("1"); // never conflated
   });
 });
 

@@ -8,6 +8,8 @@ function evt(name: string): QueuedEvent {
     eventId: `evt_${name}_${Math.random().toString(36).slice(2)}`,
     name,
     timestamp: Date.now(),
+    seq: 0,
+    context: {},
     properties: {},
     anonymousId: "anon_test",
   };

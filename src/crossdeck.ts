@@ -46,6 +46,11 @@ import { AutoTracker, DEFAULT_AUTO_TRACK, type AutoTrackConfig } from "./auto-tr
 import { ConsoleDebugLogger, findSensitivePropertyKeys, type DebugLogger } from "./debug";
 import { validateEventProperties } from "./event-validation";
 import { SuperPropertyStore } from "./super-properties";
+import {
+  INTERNAL_OPT_OUT_PROPERTY,
+  isInternalOptOut,
+  processInternalOptOutUrl,
+} from "./internal-opt-out";
 import { WebVitalsTracker } from "./web-vitals";
 import { ConsentManager, scrubPii, scrubPiiFromProperties, type ConsentState } from "./consent";
 import { BreadcrumbBuffer, type Breadcrumb } from "./breadcrumbs";
@@ -404,6 +409,11 @@ export class CrossdeckClient {
       persistIdentity ? effectiveStorage : new MemoryStorage(),
       opts.storagePrefix,
     );
+
+    // Internal-traffic opt-out: a ?crossdeck_internal=1/0 in the URL sets/
+    // clears the persisted localStorage flag now; each event then reads it
+    // (isInternalOptOut) to tag itself internal. Self-contained + guarded.
+    processInternalOptOutUrl();
 
     // Consent gating. DNT auto-detection runs once here if respectDnt
     // is enabled; otherwise the developer is responsible for calling
@@ -1300,6 +1310,15 @@ export class CrossdeckClient {
       }
     }
 
+    // Envelope v1 §3 — assign seq SYNCHRONOUSLY at track() time, before
+    // markActivity() (which may roll a new session and reset the counter to
+    // 0). The counter belongs to the session; capturing it here — at the
+    // deterministic call-order instant — means seq ordering follows call
+    // order, not scheduler luck. Also capture timestamp here so both fields
+    // are one sample (spec §3 + Swift parity from fix commit 6ac71a1).
+    const seq = s.autoTracker?.nextSeq() ?? 0;
+    const occurrenceTimestamp = Date.now();
+
     // Enrichment policy: device info first, then auto-tracker context
     // (sessionId + per-session acquisition utm_*/referrer), then
     // caller-supplied properties last so a developer can override
@@ -1311,11 +1330,15 @@ export class CrossdeckClient {
     // event in the same visit. Empty strings are filtered out so we
     // don't pollute event property dictionaries with no-signal columns.
     // Enrichment layer order (later wins on key conflict):
-    //   1. Device info (browser/os/locale/screen — captured once at boot)
-    //   2. Auto-tracker session + pageview + acquisition + click IDs
-    //   3. Super properties (registered once via Crossdeck.register)
-    //   4. Group memberships (set via Crossdeck.group)
-    //   5. Caller-supplied properties (sanitised)
+    //   1. Session + pageview + acquisition + click IDs (auto-tracker)
+    //   2. Super properties (registered once via Crossdeck.register)
+    //   3. Group memberships (set via Crossdeck.group)
+    //   4. Caller-supplied properties (sanitised)
+    // Device facts (os, browser, locale, etc.) are promoted to the
+    // top-level `context` object per Envelope v1 §4 and are NO LONGER
+    // spread into `properties`. Screen dimensions and device pixel ratio
+    // remain in `properties` as they are not part of the spec §4 context
+    // schema and are not promoted.
     // The order is intentional: developer-supplied data is most
     // authoritative, so it overrides anything the SDK auto-attached.
     // Any tracked event — auto or custom — is activity: push the rolling
@@ -1323,7 +1346,32 @@ export class CrossdeckClient {
     // events (not just pageviews/clicks) keeps one continuous session.
     s.autoTracker?.markActivity();
 
-    const enriched: EventProperties = { ...s.deviceInfo };
+    // Envelope v1 §4 — build the standardized context object with the exact
+    // spec field names. Promoted out of `properties`. Common fields: os,
+    // osVersion, appVersion, sdkName, sdkVersion, locale, timezone. Web adds:
+    // browser, browserVersion. Only include keys that are defined (string).
+    const wireContext: Record<string, string> = {};
+    const di = s.deviceInfo;
+    if (di.os) wireContext.os = di.os;
+    if (di.osVersion) wireContext.osVersion = di.osVersion;
+    const appVer = s.options.appVersion;
+    if (appVer) wireContext.appVersion = appVer;
+    wireContext.sdkName = SDK_NAME;
+    wireContext.sdkVersion = s.options.sdkVersion;
+    if (di.locale) wireContext.locale = di.locale;
+    if (di.timezone) wireContext.timezone = di.timezone;
+    if (di.browser) wireContext.browser = di.browser;
+    if (di.browserVersion) wireContext.browserVersion = di.browserVersion;
+
+    // Properties layer: screen dimensions + pixel ratio remain in properties
+    // (not promoted to context). Start WITHOUT deviceInfo spread — context
+    // fields have been promoted out; only non-context device fields remain.
+    const enriched: EventProperties = {};
+    if (di.screenWidth !== undefined) enriched.screenWidth = di.screenWidth;
+    if (di.screenHeight !== undefined) enriched.screenHeight = di.screenHeight;
+    if (di.viewportWidth !== undefined) enriched.viewportWidth = di.viewportWidth;
+    if (di.viewportHeight !== undefined) enriched.viewportHeight = di.viewportHeight;
+    if (di.devicePixelRatio !== undefined) enriched.devicePixelRatio = di.devicePixelRatio;
     const sessionId = s.autoTracker?.currentSessionId;
     if (sessionId) enriched.sessionId = sessionId;
     const pageviewId = s.autoTracker?.currentPageviewId;
@@ -1365,6 +1413,13 @@ export class CrossdeckClient {
     }
     Object.assign(enriched, validation.properties);
 
+    // Internal-traffic opt-out: this browser visited ?crossdeck_internal=1,
+    // so tag every event for ingest to classify as internal. Injected after
+    // developer properties so it can't be shadowed; reserved $-prefixed key.
+    if (isInternalOptOut()) {
+      enriched[INTERNAL_OPT_OUT_PROPERTY] = true;
+    }
+
     // ----- PII scrub -----
     // Last step before the event lands in the queue: defensive regex
     // scrub on URL paths, titles, and any string property value. An
@@ -1378,7 +1433,9 @@ export class CrossdeckClient {
     const event: QueuedEvent = {
       eventId: this.mintEventId(),
       name,
-      timestamp: Date.now(),
+      timestamp: occurrenceTimestamp,
+      seq,
+      context: wireContext,
       properties: finalProperties,
     };
     Object.assign(event, this.identityHintForEvent());

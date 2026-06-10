@@ -368,7 +368,7 @@ describe("getEntitlements + isEntitled", () => {
 });
 
 describe("track + flush", () => {
-  it("queues then sends a batch on flush() with the §13.1 envelope", async () => {
+  it("queues then sends a batch on flush() with the Event Envelope v1 wire shape", async () => {
     const c = newClient({ eventFlushBatchSize: 100, eventFlushIntervalMs: 100_000 });
     const fetchSpy = vi
       .fn()
@@ -383,7 +383,8 @@ describe("track + flush", () => {
     await c.flush();
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const body = JSON.parse(fetchSpy.mock.calls[0]![1].body as string);
-    // Batch envelope (NorthStar §13.1)
+    // Batch envelope v1 — §1
+    expect(body.envelopeVersion).toBe(1); // integer, not sdk version
     expect(body.appId).toBe("app_web_test");
     expect(body.environment).toBe("sandbox");
     expect(body.sdk?.name).toBe("@cross-deck/web");
@@ -392,9 +393,21 @@ describe("track + flush", () => {
     expect(body.events.length).toBe(2);
     expect(body.events[0].name).toBe("first");
     expect(body.events[1].name).toBe("second");
+    // seq — §3: monotonic per-session integers, assigned in call order
+    expect(typeof body.events[0].seq).toBe("number");
+    expect(typeof body.events[1].seq).toBe("number");
+    expect(body.events[1].seq).toBeGreaterThan(body.events[0].seq);
+    // context — §4: promoted device/platform facts, NOT in properties
+    expect(body.events[0].context).toBeDefined();
+    expect(body.events[0].context.sdkName).toBe("@cross-deck/web");
+    expect(typeof body.events[0].context.sdkVersion).toBe("string");
+    // caller-supplied properties stay in properties (not promoted)
     expect(body.events[1].properties).toEqual(
       expect.objectContaining({ ctaName: "trial" }),
     );
+    // device context keys must NOT appear at top-level in properties
+    expect(body.events[0].properties.sdkName).toBeUndefined();
+    expect(body.events[0].properties.sdkVersion).toBeUndefined();
     expect(body.events[0].anonymousId).toMatch(/^anon_/);
   });
 

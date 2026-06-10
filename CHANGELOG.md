@@ -2,6 +2,35 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] — 2026-06-10
+
+Event Envelope v1 conformance (`backend/docs/event-envelope-spec-v1.md`). Wire-breaking change (pre-launch; free). No public API change.
+
+- **`envelopeVersion: 1`** (integer) added to every batch POST body (spec §1). Distinct from `sdk.version`; the server uses it to gate parsing and will refuse payloads without it once enforcement deploys.
+- **`seq`** (number) on every event (spec §3). Per-session monotonic integer, assigned synchronously at `track()` time alongside `timestamp` (one sample). Counter lives in `AutoTracker`, resets to 0 at every session boundary (`session.started`, `resetSession()`, 30-min idle rollover), and persists across tab hide/show within a session. The deterministic tiebreak for events sharing a timestamp.
+- **`context`** object on every event (spec §4). Device/platform facts (`os`, `osVersion`, `appVersion`, `sdkName`, `sdkVersion`, `locale`, `timezone`, `browser`, `browserVersion`) are promoted OUT of `properties` into a standardised top-level object. `properties` retains screen dimensions and all app-supplied properties. This aligns the Web SDK field-set with Swift (which ships `os`, `osVersion`, `sdkName`, `sdkVersion`, `locale`, `timezone`, `deviceModel`), closing the Q3 drift documented in the spec's Phase-0 audit matrix.
+- Bundle-size budget: core ESM + CJS 58 → 60 KB gzipped (~0.5 KB for the envelope fields + browser/browserVersion detection; CJS landed at 58.26, over the old ceiling). react/vue ESM and UMD unchanged, comfortably under budget.
+
+## [1.6.3] — 2026-06-01
+
+Patch — error-capture noise reduction. The fetch wrapper raised an
+`HTTPError(status 0)` for **every** failed request, including the opaque
+`TypeError` an adblocker, an offline device, or an aborted navigation
+produces. Per the Fetch spec these are indistinguishable from a real outage,
+so `status 0` is the single biggest false-alarm source in browser error
+tracking — a developer's own adblocker blocking a first-party asset would
+page as a production error. No public API change.
+
+**Status-0 network failures from unambiguous client noise are no longer
+reported.** A new internal predicate suppresses three cases: `AbortError`
+(navigation / explicit cancel), offline (`navigator.onLine === false`), and
+**same-origin** failures — the page itself loaded from that origin, so it's
+demonstrably reachable; a status-0 there is client-side blocking, not a
+server fault. Genuine same-origin server failures still surface as 5xx on
+the success path. **Cross-origin outages still report** — real signal is
+kept, only the noise is dropped. The request breadcrumb still fires
+regardless, so context is preserved on other errors.
+
 ## [1.6.2] — 2026-05-31
 
 Session-boundary correctness, plus the per-platform contract runtime status

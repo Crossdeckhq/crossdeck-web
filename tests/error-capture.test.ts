@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { ErrorTracker, DEFAULT_ERROR_CAPTURE, extractSelfHostname, isSelfRequest } from "../src/error-capture";
+import { ErrorTracker, DEFAULT_ERROR_CAPTURE, extractSelfHostname, isSelfRequest, isClientNetworkNoise } from "../src/error-capture";
 import { BreadcrumbBuffer } from "../src/breadcrumbs";
 import type { CapturedError, ErrorCaptureConfig } from "../src/error-capture";
 
@@ -458,5 +458,43 @@ describe("isSelfRequest (P0 #7)", () => {
     expect(isSelfRequest("not-a-url", "api.cross-deck.com")).toBe(false);
     expect(isSelfRequest("", "api.cross-deck.com")).toBe(false);
     expect(isSelfRequest("/relative/path", "api.cross-deck.com")).toBe(false);
+  });
+});
+
+describe("isClientNetworkNoise — status-0 noise filter", () => {
+  function fakeWindow(opts: { origin?: string; href?: string; onLine?: boolean }): Window {
+    return {
+      location: opts.origin
+        ? { origin: opts.origin, href: opts.href ?? `${opts.origin}/page` }
+        : undefined,
+      navigator: opts.onLine === undefined ? undefined : { onLine: opts.onLine },
+    } as unknown as Window;
+  }
+  const online = fakeWindow({ origin: "https://app.example.com", onLine: true });
+
+  it("treats an aborted request (navigation / cancel) as noise", () => {
+    const abort = Object.assign(new Error("aborted"), { name: "AbortError" });
+    expect(isClientNetworkNoise("https://api.thirdparty.com/x", abort, online)).toBe(true);
+  });
+
+  it("treats an offline failure as noise regardless of URL", () => {
+    const offline = fakeWindow({ origin: "https://app.example.com", onLine: false });
+    expect(isClientNetworkNoise("https://api.thirdparty.com/x", new TypeError("Failed to fetch"), offline)).toBe(true);
+  });
+
+  it("treats a SAME-ORIGIN status-0 as noise — the origin is demonstrably reachable (adblocker on a first-party asset)", () => {
+    const err = new TypeError("Failed to fetch");
+    expect(isClientNetworkNoise("https://app.example.com/contracts-registry.json", err, online)).toBe(true);
+    // relative URLs resolve against the page href → same origin
+    expect(isClientNetworkNoise("../contracts-registry.json", err, online)).toBe(true);
+  });
+
+  it("does NOT suppress a cross-origin outage — that keeps real signal", () => {
+    expect(isClientNetworkNoise("https://api.thirdparty.com/v1/charge", new TypeError("Failed to fetch"), online)).toBe(false);
+  });
+
+  it("returns false when the page origin is unknown (cannot prove same-origin)", () => {
+    const noLoc = fakeWindow({ onLine: true });
+    expect(isClientNetworkNoise("https://api.thirdparty.com/x", new TypeError("Failed to fetch"), noLoc)).toBe(false);
   });
 });

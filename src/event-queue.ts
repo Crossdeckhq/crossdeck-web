@@ -52,6 +52,22 @@ export interface QueuedEvent {
   eventId: string;
   name: string;
   timestamp: number;
+  /**
+   * Event Envelope v1 §3 — per-session monotonic sequence number.
+   * Assigned synchronously at track() time from the session-scoped counter
+   * (AutoTracker.nextSeq()), reset to 0 at session.started. The
+   * deterministic tiebreak for events sharing a timestamp. Persisted on
+   * disk alongside the event so a delayed flush across a
+   * background/foreground cycle keeps its original seq.
+   */
+  seq: number;
+  /**
+   * Event Envelope v1 §4 — standardized device/platform context,
+   * promoted OUT of `properties` into one named object. Keys: os,
+   * osVersion, appVersion, sdkName, sdkVersion, locale, timezone,
+   * browser, browserVersion. App-supplied properties stay in `properties`.
+   */
+  context: Record<string, string>;
   properties: EventProperties;
   // identity hint — at least anonymousId is always set
   developerUserId?: string;
@@ -267,9 +283,13 @@ export class EventQueue {
       const env = this.cfg.envelope();
       const result = await this.cfg.http.request<IngestResponse>("POST", "/events", {
         body: {
-          // NorthStar §13.1 batch envelope. The backend validates these
-          // against the API-key-resolved app and rejects mismatches
-          // loudly (env_mismatch).
+          // Event Envelope v1 batch envelope (backend/docs/
+          // event-envelope-spec-v1.md §1). `envelopeVersion` is the
+          // schema/wire version the server parses against ("can I parse
+          // this?") and is DISTINCT from `sdk.version` ("which build is in
+          // the wild?") — two questions, two fields, never conflated. The
+          // backend refuses payloads with a missing/unknown envelopeVersion.
+          envelopeVersion: 1,
           appId: env.appId,
           environment: env.environment,
           sdk: env.sdk,

@@ -143,9 +143,21 @@ const distDir = path.resolve(new URL(".", import.meta.url).pathname, "../dist");
 // 32 ceiling; raise UMD 32 → 33 for margin. core ESM (56.5) / CJS (57.0) /
 // react (51.5) / vue (51.2) all stay under their ceilings, unchanged. This
 // is the moat paying rent again: another contract the SDK now tests live.
+//
+// Budgets nudged v1.7.0 (Jun 2026) — Event Envelope v1 conformance. Every
+// event now carries the batch-level envelopeVersion, a per-session monotonic
+// seq (co-sampled with the occurrence timestamp at track() time), and the
+// standardized top-level context object — including Web's browser/
+// browserVersion detection (UA-Client-Hints with a userAgent fallback). The
+// SDK now speaks the same server-owned wire contract as Swift / Node / RN, so
+// a delayed-flush batch of multiple sessions can no longer collapse onto one
+// timeline instant. ~0.5 KB gzipped of real code: core ESM landed at 57.78,
+// core CJS at 58.26 — CJS over the old 58 ceiling. Raise core ESM + CJS
+// 58 → 60 for a ~2 KB margin. react/vue ESM (52.7 / 52.5) and UMD (32.8) stay
+// comfortably under and are left unchanged.
 const BUDGETS = [
-  { file: "index.mjs", maxGzipKb: 58, label: "core ESM" },
-  { file: "index.cjs", maxGzipKb: 58, label: "core CJS" },
+  { file: "index.mjs", maxGzipKb: 60, label: "core ESM" },
+  { file: "index.cjs", maxGzipKb: 60, label: "core CJS" },
   { file: "react.mjs", maxGzipKb: 55, label: "react ESM" },
   { file: "vue.mjs", maxGzipKb: 55, label: "vue ESM" },
   { file: "crossdeck.umd.min.js", maxGzipKb: 33, label: "UMD min" },

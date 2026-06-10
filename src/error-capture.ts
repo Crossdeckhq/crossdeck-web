@@ -429,8 +429,18 @@ export class ErrorTracker {
         }
         return response;
       } catch (err) {
-        // Genuine network failure (DNS, connection refused, CORS).
-        if (this.opts.isConsented() && !url.includes("api.cross-deck.com")) {
+        // A status-0 failure can be a genuine outage (DNS, connection refused)
+        // but is far more often client-environment noise — an adblocker
+        // blocking the request, the user offline, or an aborted navigation.
+        // Skip the unambiguous-noise cases (see isClientNetworkNoise) so we
+        // never raise a production error for them; cross-origin outages still
+        // report. This is what stopped first-party fetches blocked by a dev's
+        // own adblocker (e.g. contracts-registry.json) paging as HIGH PRIORITY.
+        if (
+          this.opts.isConsented() &&
+          !url.includes("api.cross-deck.com") &&
+          !isClientNetworkNoise(url, err, w)
+        ) {
           this.captureHttp({
             url,
             method,
@@ -1009,6 +1019,40 @@ export function isSelfRequest(requestUrl: string, selfHostname: string | null | 
   if (!selfHostname || !requestUrl) return false;
   try {
     return new URL(requestUrl).hostname.toLowerCase() === selfHostname;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A failed fetch (status 0 — an opaque TypeError with no HTTP response) is,
+ * far more often than a real outage, client-environment noise: an adblocker or
+ * privacy extension blocking the request, the user offline, or a request
+ * aborted by a navigation. The Fetch spec deliberately makes these
+ * indistinguishable from a genuine network fault, so a status-0 capture cannot
+ * tell an outage from a blocked request — which is why "Failed to fetch" is the
+ * single biggest false-alarm source in browser error tracking. This predicate
+ * identifies the unambiguous-noise cases we refuse to raise a production error
+ * for:
+ *   • AbortError — request cancelled by a navigation or explicit abort;
+ *   • offline — navigator.onLine === false, there is no network at all;
+ *   • SAME-ORIGIN — the page itself loaded from this origin, so the origin is
+ *     demonstrably reachable; a status-0 to it is client-side blocking (e.g. an
+ *     adblocker on a first-party asset), not a server fault. Genuine
+ *     same-origin server failures return an HTTP status (5xx) and are captured
+ *     on the success path, not here.
+ * Cross-origin status-0 (a third-party API genuinely unreachable) still
+ * reports — that keeps the real signal while dropping the noise.
+ */
+export function isClientNetworkNoise(requestUrl: string, err: unknown, w: Window): boolean {
+  if (err instanceof Error && err.name === "AbortError") return true;
+  const nav = (w as Window & { navigator?: { onLine?: boolean } }).navigator;
+  if (nav && nav.onLine === false) return true;
+  const pageHref = w.location?.href;
+  const pageOrigin = w.location?.origin;
+  if (!pageOrigin) return false;
+  try {
+    return new URL(requestUrl, pageHref ?? pageOrigin).origin === pageOrigin;
   } catch {
     return false;
   }

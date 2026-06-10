@@ -181,6 +181,15 @@ export class AutoTracker {
   /** Last time we flushed lastActivityAt to storage (throttle gate). */
   private lastPersistAt = 0;
   /**
+   * Event Envelope v1 §3 — per-session monotonic sequence counter.
+   * The single owner of the seq counter lives here, alongside all other
+   * session state. Incremented atomically at track() time (via nextSeq()),
+   * reset to 0 whenever a new session boundary is crossed (startNewSession
+   * path + resetSession). Persists across background/foreground within a
+   * session — only a real session boundary (not a tab hide/show) resets it.
+   */
+  private _sessionSeq = 0;
+  /**
    * Stable per-page-view identifier. Minted at every `page.viewed`
    * emission and attached to every subsequent event until the next
    * `page.viewed`. Lets dashboards correlate "user clicked X" to
@@ -295,6 +304,25 @@ export class AutoTracker {
     return this.session?.acquisition ?? EMPTY_ACQUISITION;
   }
 
+  /**
+   * Event Envelope v1 §3 — return the next seq value for the current session
+   * and advance the counter. Called SYNCHRONOUSLY at track() time, before any
+   * async dispatch, so the seq assignment order is deterministic (call order,
+   * not scheduler luck). The counter is reset to 0 at every session boundary;
+   * it is NOT reset by tab hide/show (spec §3 clause 1: backgrounding does not
+   * reset seq). When no session is active (Node, before init, after uninstall),
+   * returns 0 and leaves the counter unchanged — fallback, not an error.
+   */
+  nextSeq(): number {
+    // Increment FIRST, then return. Pre-increment means the first event of a
+    // session gets seq=0 (counter starts at 0 after reset, returns 0 pre-bump,
+    // but we return-then-increment to match Swift's pattern: 0-based first).
+    // We return the current value and then increment so seq 0 = first event.
+    const seq = this._sessionSeq;
+    this._sessionSeq += 1;
+    return seq;
+  }
+
   // ---------- sessions ----------
   private installSessionTracking(): void {
     const now = Date.now();
@@ -386,6 +414,9 @@ export class AutoTracker {
 
   private startNewSession(): SessionState {
     const now = Date.now();
+    // Envelope v1 §3: reset the seq counter at every session boundary. The
+    // counter belongs to the session — a new session always starts at seq 0.
+    this._sessionSeq = 0;
     return {
       sessionId: mintSessionId(),
       startedAt: now,

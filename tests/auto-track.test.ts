@@ -497,3 +497,54 @@ describe("AutoTracker — click label resolution", () => {
     expect(props?.text).toBe("Close dialog");
   });
 });
+
+// ============================================================
+// Event Envelope v1 §3 — per-session monotonic seq counter
+// ============================================================
+
+describe("AutoTracker — nextSeq() (Envelope v1 §3)", () => {
+  it("starts at 0 for the first event of a new session", () => {
+    const ctx = makeContext();
+    const t = newTracker({ sessions: false, pageViews: false }, ctx.track);
+    t.install();
+    // Manually prime a session (no sessions auto-track so we fake it)
+    t.resetSession();
+    // First call returns 0
+    expect(t.nextSeq()).toBe(0);
+  });
+
+  it("increments monotonically within a session", () => {
+    const ctx = makeContext();
+    const t = newTracker({ sessions: false, pageViews: false }, ctx.track);
+    t.install();
+    t.resetSession();
+    expect(t.nextSeq()).toBe(0);
+    expect(t.nextSeq()).toBe(1);
+    expect(t.nextSeq()).toBe(2);
+  });
+
+  it("resets to 0 on resetSession() (new session boundary)", () => {
+    const ctx = makeContext();
+    const t = newTracker({ sessions: false, pageViews: false }, ctx.track);
+    t.install();
+    t.resetSession();
+    t.nextSeq(); // 0
+    t.nextSeq(); // 1
+    t.nextSeq(); // 2
+    t.resetSession(); // new session — counter resets
+    expect(t.nextSeq()).toBe(0); // back to 0
+  });
+
+  it("counter is independent of session presence — starts at 0 on construction", () => {
+    // The counter field initialises to 0; the first call always returns 0
+    // even without a session (matches crossdeck.ts fallback path).
+    const ctx = makeContext();
+    const t = new AutoTracker(
+      { ...DEFAULT_AUTO_TRACK, sessions: false, pageViews: false },
+      ctx.track,
+    );
+    // Not installed, no session set up
+    expect(t.nextSeq()).toBe(0);
+    expect(t.nextSeq()).toBe(1); // increments monotonically
+  });
+});
