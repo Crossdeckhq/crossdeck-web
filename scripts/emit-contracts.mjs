@@ -58,10 +58,14 @@ if (!fs.existsSync(distDir)) {
 }
 
 if (!fs.existsSync(contractsRoot)) {
-  console.error(
-    `[emit-contracts] contracts/ directory missing at ${contractsRoot}.`,
+  // Standalone build (the published public repo) mirrors only this SDK — the
+  // monorepo contracts/ dir is absent. The dist/contracts.json sidecar is
+  // optional (the contracts ship in the JS via _contracts-bundled.ts), so
+  // skip it gracefully rather than failing the release.
+  console.log(
+    "[emit-contracts] contracts/ absent (standalone build) — skipping the optional dist/contracts.json sidecar",
   );
-  process.exit(1);
+  process.exit(0);
 }
 
 /** Recursively collect every *.json under contracts/, skipping
