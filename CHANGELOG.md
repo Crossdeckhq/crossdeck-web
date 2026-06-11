@@ -2,6 +2,35 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] — 2026-06-11
+
+**PARK on version-rejection — events are held, never dropped.** A third
+event-queue outcome for the day the server stops accepting an outdated event
+format. Purely additive; no public API change.
+
+**Added:**
+
+- **PARK (HTTP `426` / `sdk_version_unsupported`).** Previously a permanent 4xx
+  dropped the batch. Now a version-rejection is recognised as its own outcome —
+  distinct from retry (transient) and drop (invalid): the data is good, only the
+  wire dialect is stale. The queue **holds** the events (folded to the front of
+  the durable localStorage queue, FIFO-capped at 1000), **hushes** (stops
+  flushing a known-too-old payload — no wasted battery/bandwidth), **signals**
+  once (one `console.warn` + a typed `sdk.parked` debug event the dashboard
+  reads), and **backfills** on the next page load after you upgrade. So "paused,
+  not lost — held on-device, resumes on upgrade" is literally true.
+- **`sdk_version_unsupported`** added to the error-codes catalogue with
+  remediation, and `version_error` to `CrossdeckErrorType`. `CrossdeckError`
+  now carries `minVersion` / `surface` (parsed from the 426 body) so the PARK
+  message names the exact version to update to.
+- New `onParked` queue callback (host → dashboard heartbeat channel).
+- Bundle-size budget: UMD min 33 → 35 KB gzipped (~0.5 KB for the PARK branch +
+  onParked + catalogue entry + minVersion/surface). core/react/vue unchanged,
+  under budget.
+
+See https://cross-deck.com/docs/sdk-event-durability/ for the full durability
+contract.
+
 ## [1.7.0] — 2026-06-10
 
 Event Envelope v1 conformance (`backend/docs/event-envelope-spec-v1.md`). Wire-breaking change (pre-launch; free). No public API change.

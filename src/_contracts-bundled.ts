@@ -5,8 +5,8 @@
 
 import type { Contract } from "./contracts";
 
-export const BUNDLED_IN = "@cross-deck/web@1.7.0" as const;
-export const SDK_VERSION = "1.7.0" as const;
+export const BUNDLED_IN = "@cross-deck/web@1.8.0" as const;
+export const SDK_VERSION = "1.8.0" as const;
 
 export const BUNDLED_CONTRACTS: readonly Contract[] = Object.freeze([
   {
@@ -129,7 +129,7 @@ export const BUNDLED_CONTRACTS: readonly Contract[] = Object.freeze([
       "legal/security/index.html#diagnostic",
       "legal/sdk-data/index.html#b-diagnostic"
     ],
-    "bundledIn": "@cross-deck/web@1.7.0",
+    "bundledIn": "@cross-deck/web@1.8.0",
     "runtimeVerified": true
   },
   {
@@ -169,7 +169,7 @@ export const BUNDLED_CONTRACTS: readonly Contract[] = Object.freeze([
     ],
     "registeredAt": "2026-05-26",
     "firstRegisteredIn": "bank-grade reconciliation v1.4.0 — phase 8 (codifies existing contract)",
-    "bundledIn": "@cross-deck/web@1.7.0",
+    "bundledIn": "@cross-deck/web@1.8.0",
     "runtimeVerified": true
   },
   {
@@ -215,7 +215,7 @@ export const BUNDLED_CONTRACTS: readonly Contract[] = Object.freeze([
     ],
     "registeredAt": "2026-05-26",
     "firstRegisteredIn": "bank-grade reconciliation v1.4.0 — phase 3.3",
-    "bundledIn": "@cross-deck/web@1.7.0",
+    "bundledIn": "@cross-deck/web@1.8.0",
     "runtimeVerified": true
   },
   {
@@ -321,7 +321,7 @@ export const BUNDLED_CONTRACTS: readonly Contract[] = Object.freeze([
     ],
     "registeredAt": "2026-05-26",
     "firstRegisteredIn": "bank-grade reconciliation v1.4.0 — phase 2.2.a + 2.2.b + 2.2.c",
-    "bundledIn": "@cross-deck/web@1.7.0",
+    "bundledIn": "@cross-deck/web@1.8.0",
     "runtimeVerified": true
   },
   {
@@ -349,7 +349,7 @@ export const BUNDLED_CONTRACTS: readonly Contract[] = Object.freeze([
     ],
     "registeredAt": "2026-05-26",
     "firstRegisteredIn": "bank-grade reconciliation v1.4.0 — phase 5.5",
-    "bundledIn": "@cross-deck/web@1.7.0",
+    "bundledIn": "@cross-deck/web@1.8.0",
     "runtimeVerified": false
   },
   {
@@ -429,7 +429,7 @@ export const BUNDLED_CONTRACTS: readonly Contract[] = Object.freeze([
     ],
     "registeredAt": "2026-05-26",
     "firstRegisteredIn": "bank-grade reconciliation v1.4.0 — phase 1.3 (web/RN) + dogfood-gap fix (swift + android)",
-    "bundledIn": "@cross-deck/web@1.7.0",
+    "bundledIn": "@cross-deck/web@1.8.0",
     "runtimeVerified": true
   },
   {
@@ -475,7 +475,7 @@ export const BUNDLED_CONTRACTS: readonly Contract[] = Object.freeze([
     ],
     "registeredAt": "2026-05-26",
     "firstRegisteredIn": "bank-grade reconciliation v1.4.0 — phase 6.2",
-    "bundledIn": "@cross-deck/web@1.7.0",
+    "bundledIn": "@cross-deck/web@1.8.0",
     "runtimeVerified": true
   },
   {
@@ -517,7 +517,7 @@ export const BUNDLED_CONTRACTS: readonly Contract[] = Object.freeze([
     ],
     "registeredAt": "2026-05-26",
     "firstRegisteredIn": "bank-grade reconciliation v1.4.0 — phase 3.2",
-    "bundledIn": "@cross-deck/web@1.7.0",
+    "bundledIn": "@cross-deck/web@1.8.0",
     "runtimeVerified": true
   },
   {
@@ -551,7 +551,7 @@ export const BUNDLED_CONTRACTS: readonly Contract[] = Object.freeze([
     ],
     "registeredAt": "2026-05-26",
     "firstRegisteredIn": "bank-grade reconciliation v1.4.0 — phase 3.5",
-    "bundledIn": "@cross-deck/web@1.7.0",
+    "bundledIn": "@cross-deck/web@1.8.0",
     "runtimeVerified": false
   }
 ]) as readonly Contract[];

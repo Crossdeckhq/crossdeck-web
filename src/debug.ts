@@ -28,6 +28,12 @@ export type DebugSignal =
   // a permanent 4xx (key revoked, malformed batch, etc.). Always loud,
   // regardless of debug mode — see the console.error in crossdeck.ts.
   | "sdk.flush_permanent_failure"
+  // Emitted when the server PARKS the SDK (HTTP 426 / sdk_version_unsupported):
+  // the wire dialect is too old. Distinct from flush_permanent_failure —
+  // events are HELD on-device (not dropped) and deliver on upgrade. The
+  // second signal channel (paired with the queue's one console line); the
+  // dashboard reads it to render the amber "update to resume" advisory.
+  | "sdk.parked"
   | "sdk.consent_changed"
   | "sdk.consent_denied"
   | "sdk.consent_dnt_applied"

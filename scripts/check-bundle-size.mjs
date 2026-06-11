@@ -155,12 +155,19 @@ const distDir = path.resolve(new URL(".", import.meta.url).pathname, "../dist");
 // core CJS at 58.26 — CJS over the old 58 ceiling. Raise core ESM + CJS
 // 58 → 60 for a ~2 KB margin. react/vue ESM (52.7 / 52.5) and UMD (32.8) stay
 // comfortably under and are left unchanged.
+//
+// Budgets nudged v1.8.0 (Jun 2026) — PARK on version-rejection. A third event-
+// queue outcome (HTTP 426 / sdk_version_unsupported): hold the events, hush,
+// signal once, backfill on upgrade. ~0.5 KB gzipped of real code (the PARK
+// branch + onParked + the catalogue entry + minVersion/surface on the error).
+// core ESM/CJS (58.8 / 59.3) and react/vue (53.7 / 53.5) stay under their
+// ceilings; UMD landed at 33.5 over the old 33. Raise UMD 33 → 35 for margin.
 const BUDGETS = [
   { file: "index.mjs", maxGzipKb: 60, label: "core ESM" },
   { file: "index.cjs", maxGzipKb: 60, label: "core CJS" },
   { file: "react.mjs", maxGzipKb: 55, label: "react ESM" },
   { file: "vue.mjs", maxGzipKb: 55, label: "vue ESM" },
-  { file: "crossdeck.umd.min.js", maxGzipKb: 33, label: "UMD min" },
+  { file: "crossdeck.umd.min.js", maxGzipKb: 35, label: "UMD min" },
 ];
 
 let failed = false;

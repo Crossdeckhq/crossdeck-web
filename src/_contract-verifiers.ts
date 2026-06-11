@@ -1020,6 +1020,7 @@ const BACKEND_WIRE_CODES: readonly string[] = Object.freeze([
   "stripe_not_supported",
   "missing_required_param",
   "invalid_param_value",
+  "sdk_version_unsupported",
 ]);
 
 /**

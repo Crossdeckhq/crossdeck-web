@@ -28,6 +28,7 @@ export interface ErrorCodeEntry {
     | "permission_error"
     | "invalid_request_error"
     | "rate_limit_error"
+    | "version_error"
     | "internal_error"
     | "network_error"
     | "configuration_error";
@@ -238,6 +239,13 @@ export const CROSSDECK_ERROR_CODES: readonly ErrorCodeEntry[] = Object.freeze([
     type: "invalid_request_error",
     description: "A field is present but the value failed validation (wrong shape, wrong length, wrong enum value).",
     resolution: "Read error.message for the specific field + reason. SDK-managed call sites should never emit this — file a bug if you do.",
+    retryable: false,
+  },
+  {
+    code: "sdk_version_unsupported",
+    type: "version_error",
+    description: "HTTP 426 — your installed SDK sends an event format the server no longer accepts. The data is good; only the wire dialect is too old. The SDK PARKS automatically: events are held on-device (paused, not lost) and deliver on the next launch after you upgrade.",
+    resolution: "Update @cross-deck/web to at least the version in error.minVersion and redeploy — the parked queue backfills automatically. See https://cross-deck.com/docs/sdk-event-durability/.",
     retryable: false,
   },
 ] as const);

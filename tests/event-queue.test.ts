@@ -646,3 +646,105 @@ describe("EventQueue — permanent failure on 4xx (P0 #6)", () => {
     expect(q.getStats().inFlight).toBe(1);
   });
 });
+
+describe("EventQueue — PARK (HTTP 426 / sdk_version_unsupported)", () => {
+  function park426Http() {
+    return {
+      request: vi.fn().mockImplementation(async () => {
+        throw new CrossdeckError({
+          type: "invalid_request_error",
+          code: "sdk_version_unsupported",
+          message: "Your SDK version is too old for this server.",
+          status: 426,
+          minVersion: "1.7.0",
+          surface: "web",
+        });
+      }),
+    };
+  }
+
+  it("PARKS on 426 — retains events (never drops), hushes flushing, fires onParked + ONE console warning", async () => {
+    const http = park426Http();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let parked: { minVersion?: string; surface?: string } | null = null;
+    const q = new EventQueue({
+      http: http as never,
+      batchSize: 2,
+      intervalMs: 10_000,
+      envelope: TEST_ENVELOPE,
+      scheduler: () => () => {},
+      onParked: (info) => {
+        parked = info;
+      },
+    });
+    q.enqueue(fakeEvent("a"));
+    q.enqueue(fakeEvent("b"));
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Held, NOT dropped — the whole point of PARK.
+    expect(q.getStats().dropped).toBe(0);
+    expect(q.getStats().buffered).toBe(2); // folded back to the buffer front
+    expect(q.getStats().inFlight).toBe(0);
+
+    // Signalled both channels: callback (→ dashboard heartbeat) + console.
+    expect(parked).toEqual({ minVersion: "1.7.0", surface: "web" });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]![0])).toContain("PARKED");
+    expect(String(warn.mock.calls[0]![0])).toContain("1.7.0");
+
+    // Hushed: further flushes are no-ops — no battery/bandwidth waste,
+    // no pointless rejects in the server logs.
+    const callsAtPark = http.request.mock.calls.length;
+    await q.flush();
+    await q.flush();
+    expect(http.request.mock.calls.length).toBe(callsAtPark);
+
+    // A new event re-parks WITHOUT a second console line (one per instance).
+    q.enqueue(fakeEvent("c"));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it("backfills on upgrade — held events deliver from the persisted queue on the next (upgraded) boot", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const storage = new MemoryStorage();
+    const store = new PersistentEventStore({ prefix: "cd_park_test_", storage });
+
+    // Old SDK: the server PARKS it (426). Events held + persisted, never lost.
+    const oldHttp = park426Http();
+    const oldQ = new EventQueue({
+      http: oldHttp as never,
+      batchSize: 2,
+      intervalMs: 10_000,
+      envelope: TEST_ENVELOPE,
+      scheduler: () => () => {},
+      persistentStore: store,
+    });
+    oldQ.enqueue(fakeEvent("held1"));
+    oldQ.enqueue(fakeEvent("held2"));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(oldQ.getStats().dropped).toBe(0);
+    expect(store.load().length).toBe(2); // durable on disk
+
+    // Upgrade: a FRESH queue instance (unparked) rehydrates the SAME store,
+    // and the server now ACCEPTS the events. This is the next boot post-upgrade.
+    const newHttp = fakeHttp("ok");
+    const newQ = new EventQueue({
+      http: newHttp as never,
+      batchSize: 100,
+      intervalMs: 10_000,
+      envelope: TEST_ENVELOPE,
+      scheduler: () => () => {},
+      persistentStore: store,
+    });
+    await newQ.flush();
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Backfill delivered — "held on-device, resumes on upgrade" is literally true.
+    expect(newHttp.request).toHaveBeenCalledTimes(1);
+    const body = newHttp.request.mock.calls[0]![2].body as { events: QueuedEvent[] };
+    expect(body.events.map((e) => e.name).sort()).toEqual(["held1", "held2"]);
+    vi.restoreAllMocks();
+  });
+});

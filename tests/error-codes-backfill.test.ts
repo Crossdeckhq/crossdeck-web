@@ -29,6 +29,7 @@ describe("error-codes catalogue backfill (Phase 6.2)", () => {
     "stripe_not_supported",
     "missing_required_param",
     "invalid_param_value",
+    "sdk_version_unsupported",
   ];
 
   it.each(backendCodes)("includes backend code %s with remediation", (code) => {

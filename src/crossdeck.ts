@@ -392,6 +392,17 @@ export class CrossdeckClient {
           { ...info },
         );
       },
+      onParked: (info) => {
+        // Second signal channel (the queue already logged ONE console line).
+        // PARK is NOT a drop: events are held on-device and resume on upgrade.
+        // The dashboard reads this to render the calm amber "update to resume"
+        // advisory. Distinct signal from flush_permanent_failure.
+        debug.emit(
+          "sdk.parked",
+          `[crossdeck] SDK parked — server no longer accepts this version's event format. Events held on-device (paused, not lost); update @cross-deck/web${info.minVersion ? ` to >= ${info.minVersion}` : ""} to resume.`,
+          { ...info },
+        );
+      },
     });
 
     // Collect device info ONCE at boot; cheap to re-use on every event.
