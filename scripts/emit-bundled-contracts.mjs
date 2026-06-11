@@ -44,6 +44,18 @@ function collectContracts(dir) {
   return found;
 }
 
+// Standalone build (the published public repo, crossdeck-web) mirrors only
+// this SDK — the monorepo `contracts/` dir is absent. The committed
+// `_contracts-bundled.ts` is the source of truth there, so skip regeneration
+// and leave it untouched. (In the monorepo, contracts/ exists and we
+// regenerate as normal.)
+if (!fs.existsSync(contractsRoot)) {
+  console.log(
+    "[emit-bundled-contracts] contracts/ absent (standalone build) — keeping the committed _contracts-bundled.ts",
+  );
+  process.exit(0);
+}
+
 const sdkVersion = readSdkVersion();
 const bundledIn = `@cross-deck/${SDK_IDENTIFIER}@${sdkVersion}`;
 
