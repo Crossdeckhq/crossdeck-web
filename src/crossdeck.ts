@@ -41,6 +41,7 @@ import { EventQueue, type QueuedEvent } from "./event-queue";
 import { PersistentEventStore } from "./event-storage";
 import { CookieStorage, detectDefaultStorage, MemoryStorage } from "./storage";
 import { randomChars } from "./identity";
+import { bridgeReadCost } from "./read-cost-bridge";
 import { collectDeviceInfo, type DeviceInfo } from "./device-info";
 import { AutoTracker, DEFAULT_AUTO_TRACK, type AutoTrackConfig } from "./auto-track";
 import { ConsoleDebugLogger, findSensitivePropertyKeys, type DebugLogger } from "./debug";
@@ -760,6 +761,11 @@ export class CrossdeckClient {
         message: "identify(userId) requires a non-empty userId.",
       });
     }
+    // Read-cost cross-match (the moat): the instant we know who this session is,
+    // tell the Buckets collector — every browser database read from here on
+    // attributes to this user. Operational, like the entitlement cache, not an
+    // analytics event; a no-op unless @cross-deck/buckets/web is installed.
+    bridgeReadCost({ actor: userId });
     if (!s.consent.analytics) {
       // No-op on consent denial — but throw NOT — the developer
       // expected an aliasResult to await. Return a no-op result that
@@ -1706,6 +1712,9 @@ export class CrossdeckClient {
     // observers are per-page-life, not per-identity.
     this.state.autoTracker?.uninstall();
     this.state.identity.reset();
+    // Clear the read-cost actor too: from here, browser reads attribute to no
+    // user (the next session re-identifies). Matches the entitlement wipe below.
+    bridgeReadCost({ actor: undefined });
     // Logout-grade wipe: removes EVERY per-user entitlement slot on
     // this device (layer (c) of the v1.4.0 isolation fix). A shared
     // device can never leave another user's entitlements readable
@@ -1819,6 +1828,24 @@ export class CrossdeckClient {
       s.developerUserId ??
       s.identity.anonymousId
     );
+  }
+
+  /**
+   * The device-scoped anonymous id the SDK minted on first boot and persists
+   * across launches (stable until reset()). Public accessor so a server-to-
+   * server flow or a block/suspension gate can pass the device identity to
+   * POST /v1/resolve without reaching into private storage.
+   *
+   * Returns `null` BEFORE init() — there is no anon id yet, and a gate that
+   * fires during early app boot should get a clean falsy, not a throw. (This is
+   * deliberately softer than getCheckoutReference(), which requires init.)
+   *
+   * Note: /v1/resolve also accepts a VERIFIED identity (userId + idToken)
+   * without an anonymousId, and that path is higher-trust — prefer it where the
+   * user is authenticated.
+   */
+  getAnonymousId(): string | null {
+    return this.state ? this.state.identity.anonymousId : null;
   }
 
   // ---------- private helpers ----------

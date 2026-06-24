@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Sync the @crossdeck/web SDK source from this monorepo to the public
-# repo at https://github.com/VistaApps-za/crossdeck-web.
+# repo at https://github.com/Crossdeckhq/crossdeck-web.
 #
 # We develop in the monorepo (alongside backend + dashboard) and mirror
 # the SDK directory to its public home before each release. This script
@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-PUBLIC_REPO="VistaApps-za/crossdeck-web"
+PUBLIC_REPO="Crossdeckhq/crossdeck-web"
 LOCAL_CLONE="${TMPDIR:-/tmp}/crossdeck-web-sync"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMMIT_MSG="${1:-Sync from monorepo}"

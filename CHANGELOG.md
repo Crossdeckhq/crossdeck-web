@@ -2,6 +2,17 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] — 2026-06-24
+
+**Added — read-cost cross-match (the Buckets bridge).** When
+[`@cross-deck/buckets/web`](https://www.npmjs.com/package/@cross-deck/buckets) is
+installed, `identify(userId)` now tells the browser collector who the session is,
+so every browser database read attributes to that user; `reset()` clears it on
+logout. A browser session is single-user, so the actor is session-level. Decoupled
+and zero-dependency — the SDK drives a global bridge (`__crossdeckBucketsBridge__`)
+and never imports Buckets; a missing collector is a silent no-op. The cross-match is
+operational (like the entitlement cache), not an analytics event.
+
 ## [1.8.0] — 2026-06-11
 
 **PARK on version-rejection — events are held, never dropped.** A third

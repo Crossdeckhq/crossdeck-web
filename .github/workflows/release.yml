@@ -7,7 +7,7 @@ name: Release
 # (scripts/guard-ci-publish.mjs) refuses any other path.
 #
 # Trusted-publisher config MUST match on npmjs.com → @cross-deck/web → Settings
-# → Trusted Publisher: repository "VistaApps-za/crossdeck-web" AND workflow
+# → Trusted Publisher: repository "Crossdeckhq/crossdeck-web" AND workflow
 # filename "release.yml". A mismatch is the one way correct trust silently
 # falls back to a 2FA prompt.
 

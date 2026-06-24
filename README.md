@@ -79,6 +79,7 @@ That's the full happy path.
 - **One identity for every device + user.** Pre-login events get an `anonymousId`. After login, `identify()` links them to your user ID through Crossdeck's identity graph. The SDK persists both so subsequent app launches resume where you left off.
 - **Synchronous entitlement reads.** `getEntitlements()` populates a local cache. `isEntitled("pro")` is a Set lookup — no network call, no waiting.
 - **Batched telemetry.** `track()` queues events in memory; the SDK flushes every 5 seconds (configurable) or when the buffer hits 20 events. Network failures re-queue the batch — events aren't lost on a flaky connection.
+- **Outdated-version PARK (v1.8.0).** If the server ever stops accepting this SDK version's event format (HTTP `426` / `sdk_version_unsupported`), events are **parked, not lost**: held in the durable on-device queue (up to 1,000 events across page loads via `localStorage`), flushing hushes, one console warning names the exact version to update to, and everything delivers automatically after you upgrade. See [the durability contract](https://cross-deck.com/docs/sdk-event-durability/).
 - **Boot heartbeat.** On `init()` the SDK pings `/v1/sdk/heartbeat` so the dashboard's Apps page can show you "last seen" per install. Disable with `autoHeartbeat: false`.
 - **Stripe-style errors.** Every async method throws `CrossdeckError` with `type`, `code`, `requestId`, and `status` — same shape as Stripe's SDKs, so generic error handlers transfer.
 
@@ -167,6 +168,8 @@ If `mergePending: true`, both identifiers already pointed at different customers
 
 **Entitlement-cache isolation (v1.4.0).** Every `identify(userId)` switches the local entitlement cache to a per-user storage slot — `localStorage["crossdeck:entitlements:<sha256(userId)>"]` — and unconditionally wipes the in-memory snapshot. A user-switch on a shared device CANNOT cross-read a prior user's cached entitlements, even if the in-memory clear is somehow skipped, because the storage keys are physically separate. `reset()` then wipes every per-user slot on the device (logout-grade).
 
+**Read-cost cross-match (v1.9.0).** If [`@cross-deck/buckets/web`](https://www.npmjs.com/package/@cross-deck/buckets) is installed, `identify(userId)` also tells the browser read-cost collector who the session is — so every database read this session makes attributes to that user, and you can see *which user's which feature* is driving your read bill (`npx @cross-deck/buckets`, or the dashboard). `reset()` clears it on logout. Decoupled and zero-dependency — the SDK never imports Buckets; with no collector installed it's a silent no-op. This is operational, not an analytics event.
+
 **Idempotency-Key (v1.4.0).** Every `syncPurchases()` derives a
 deterministic `Idempotency-Key` from the request body — same
 signed transaction in produces the same key out. The backend
@@ -204,6 +207,8 @@ window.addEventListener("beforeunload", () => {
 
 Event names match `[A-Za-z0-9_.\-:]+`, max 128 chars. Properties are JSON-serialisable, max 8 KB per event after JSON encoding.
 
+An empty event name **throws synchronously** with `CrossdeckError({ code: "missing_event_name" })` — the JS SDKs reject invalid input at the call site with a typed, catchable error (the Swift SDK's fire-and-forget surface drops + debug-logs instead; same invariant — invalid input never crashes your app and never reaches the wire — platform-native signalling). Codified as the `invalid-input-rejected-natively` contract.
+
 In `debug: true` mode the SDK warns (one signal per call) when property keys look like PII — `email`, `password`, `token`, `secret`, `card`, `phone`. Crossdeck never strips fields automatically; the warning is so accidental leaks surface during development, not in prod logs.
 
 ### `await Crossdeck.syncPurchases(input)`
@@ -237,7 +242,7 @@ Force-flush the in-memory event queue. Useful before page unload or when shuttin
 
 ### `Crossdeck.setDebugMode(enabled)`
 
-Toggle the verbose debug-signal vocabulary at runtime (NorthStar §16). When enabled, the SDK emits a fixed set of `console.info` lines tagged `[crossdeck:sdk.<signal>]` for `sdk.configured`, `sdk.first_event_sent`, `sdk.no_identity`, `sdk.purchase_evidence_sent`, `sdk.environment_mismatch`, and `sdk.sensitive_property_warning`.
+Toggle the verbose debug-signal vocabulary at runtime (NorthStar §16). When enabled, the SDK emits a fixed set of `console.info` lines tagged `[crossdeck:sdk.<signal>]` for `sdk.configured`, `sdk.first_event_sent`, `sdk.no_identity`, `sdk.purchase_evidence_sent`, `sdk.environment_mismatch`, `sdk.sensitive_property_warning`, and `sdk.parked` (fired once when the queue parks on an outdated-version rejection).
 
 ### `Crossdeck.diagnostics()`
 
@@ -249,7 +254,7 @@ Diagnostic snapshot — useful for development consoles and bug reports:
   anonymousId: "anon_…",
   crossdeckCustomerId: "cdcust_…" | null,
   developerUserId: "user_…" | null,
-  sdkVersion: "0.1.0",
+  sdkVersion: "1.8.0",
   baseUrl: "https://api.cross-deck.com/v1",
   entitlements: { count: 2, lastUpdated: 1717891200000 },
   events: { buffered: 0, dropped: 0, inFlight: 0, lastFlushAt: 1717891200000, lastError: null },
@@ -271,8 +276,8 @@ CrossdeckContracts.byId("per-user-cache-isolation");
 CrossdeckContracts.byPillar("entitlements");
 CrossdeckContracts.withStatus("proposed");
 CrossdeckContracts.findByTestName("identify(B) makes A's entitlements unreachable from in-memory");
-CrossdeckContracts.sdkVersion;        // "1.5.0"
-CrossdeckContracts.bundledIn;         // "@cross-deck/web@1.5.0"
+CrossdeckContracts.sdkVersion;        // "1.8.0"
+CrossdeckContracts.bundledIn;         // "@cross-deck/web@1.8.0"
 ```
 
 The `Contract` type is exported alongside; the binary-stability promise (which fields are guaranteed across patch/minor releases) is documented inline on `src/contracts.ts` and in [`contracts/README.md`](https://github.com/VistaApps-za/crossdeck/blob/main/contracts/README.md).
@@ -373,8 +378,9 @@ Error fields:
 
 | Field | What it is |
 |---|---|
-| `type` | One of `authentication_error`, `permission_error`, `invalid_request_error`, `rate_limit_error`, `internal_error`, `network_error`, `configuration_error`. Same vocabulary the backend uses. |
-| `code` | Specific machine-readable code, e.g. `invalid_api_key`, `origin_not_allowed`, `rate_limited`, `network_error`. |
+| `type` | One of `authentication_error`, `permission_error`, `invalid_request_error`, `rate_limit_error`, `internal_error`, `network_error`, `configuration_error`, `version_error`. Same vocabulary the backend uses. |
+| `code` | Specific machine-readable code, e.g. `invalid_api_key`, `origin_not_allowed`, `rate_limited`, `network_error`, `sdk_version_unsupported`. |
+| `minVersion`, `surface` | Set on `version_error` (HTTP 426) responses — the exact SDK version to update to. The queue PARKs on this error instead of dropping (see "Outdated-version PARK" above). |
 | `message` | Human-readable description. |
 | `requestId` | Server-issued ID. Echo it in support tickets — we'll have a one-line log entry that explains the decision. |
 | `status` | HTTP status code if the error came from an API response. |
