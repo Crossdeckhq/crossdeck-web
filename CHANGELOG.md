@@ -2,6 +2,13 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.1] — 2026-06-30
+
+**Docs — knowledge-backbone governance release.** No runtime API change. This
+patch republishes the SDK with the Markdoc-backed README/version-control surface
+so npm, the public GitHub mirror, and the Crossdeck knowledge backbone all carry
+the same governed installation and contract documentation.
+
 ## [1.9.0] — 2026-06-24
 
 **Added — read-cost cross-match (the Buckets bridge).** When

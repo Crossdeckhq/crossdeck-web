@@ -254,7 +254,7 @@ Diagnostic snapshot — useful for development consoles and bug reports:
   anonymousId: "anon_…",
   crossdeckCustomerId: "cdcust_…" | null,
   developerUserId: "user_…" | null,
-  sdkVersion: "1.8.0",
+  sdkVersion: "1.9.0",
   baseUrl: "https://api.cross-deck.com/v1",
   entitlements: { count: 2, lastUpdated: 1717891200000 },
   events: { buffered: 0, dropped: 0, inFlight: 0, lastFlushAt: 1717891200000, lastError: null },
@@ -276,8 +276,8 @@ CrossdeckContracts.byId("per-user-cache-isolation");
 CrossdeckContracts.byPillar("entitlements");
 CrossdeckContracts.withStatus("proposed");
 CrossdeckContracts.findByTestName("identify(B) makes A's entitlements unreachable from in-memory");
-CrossdeckContracts.sdkVersion;        // "1.8.0"
-CrossdeckContracts.bundledIn;         // "@cross-deck/web@1.8.0"
+CrossdeckContracts.sdkVersion;        // "1.9.0"
+CrossdeckContracts.bundledIn;         // "@cross-deck/web@1.9.0"
 ```
 
 The `Contract` type is exported alongside; the binary-stability promise (which fields are guaranteed across patch/minor releases) is documented inline on `src/contracts.ts` and in [`contracts/README.md`](https://github.com/VistaApps-za/crossdeck/blob/main/contracts/README.md).
