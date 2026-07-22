@@ -162,9 +162,15 @@ const distDir = path.resolve(new URL(".", import.meta.url).pathname, "../dist");
 // branch + onParked + the catalogue entry + minVersion/surface on the error).
 // core ESM/CJS (58.8 / 59.3) and react/vue (53.7 / 53.5) stay under their
 // ceilings; UMD landed at 33.5 over the old 33. Raise UMD 33 → 35 for margin.
+//
+// Budgets nudged v1.10.x (Jul 2026) — campaign-arrival connect (the HubSpot
+// identity bridge, ~0.4 KB) + exception-safe unload handlers (iabjs teardown
+// defense, ~0.2 KB). core CJS landed at 60.08 over the old 60 ceiling, core ESM
+// at 59.60 right against it. Raise core ESM + CJS 60 → 62 for a ~2 KB margin.
+// react/vue (54.5 / 54.3) and UMD stay under and are left unchanged.
 const BUDGETS = [
-  { file: "index.mjs", maxGzipKb: 60, label: "core ESM" },
-  { file: "index.cjs", maxGzipKb: 60, label: "core CJS" },
+  { file: "index.mjs", maxGzipKb: 62, label: "core ESM" },
+  { file: "index.cjs", maxGzipKb: 62, label: "core CJS" },
   { file: "react.mjs", maxGzipKb: 55, label: "react ESM" },
   { file: "vue.mjs", maxGzipKb: 55, label: "vue ESM" },
   { file: "crossdeck.umd.min.js", maxGzipKb: 35, label: "UMD min" },

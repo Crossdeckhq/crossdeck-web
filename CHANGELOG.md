@@ -2,6 +2,15 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.2] — 2026-07-22
+
+**First published 1.10.x — same SDK, release pipeline fully green.** 1.10.0/1.10.1
+were staged but blocked in CI before publish (1.10.0: `npm@latest` engine mismatch;
+1.10.1: the bundle-size budget, which the 1.10.x feature growth crossed by ~80 bytes
+on core CJS). Both fixed (npm pinned to `npm@^11`; core budget raised 60 → 62 KB for
+a ~2 KB margin). SDK contents are identical to 1.10.0 below — see that entry for the
+campaign-arrival feature and the in-app-browser fixes.
+
 ## [1.10.1] — 2026-07-22
 
 **Republish of 1.10.0 — same SDK, working release pipeline.** The 1.10.0 tag never
