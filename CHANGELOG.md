@@ -2,6 +2,15 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.1] — 2026-07-22
+
+**Republish of 1.10.0 — same SDK, working release pipeline.** The 1.10.0 tag never
+reached npm: the release runner upgraded npm via `npm@latest`, which had rolled to
+12.x (Node ≥22) and hard-failed `EBADENGINE` on the Node 20 runner, before the
+publish step. That's fixed (the workflow now pins `npm@^11`). This is the first
+version to actually publish; the SDK contents are identical to 1.10.0 below —
+see that entry for the campaign-arrival feature and the in-app-browser fixes.
+
 ## [1.10.0] — 2026-07-22
 
 **Added — campaign-arrival connect (the HubSpot identity bridge).** When a page is
