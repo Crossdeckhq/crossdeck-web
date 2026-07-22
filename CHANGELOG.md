@@ -2,6 +2,20 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.3] — 2026-07-22
+
+**Fixed — browser-injected globals no longer blamed on your code.** A browser (not
+your app) injects private globals into every page — `window.__firefox__` (Firefox
+for iOS reader mode), `__gCrWeb` (Chrome for iOS), `zaloJSV2` (Zalo). Their content
+script races page setup and throws in the page's own global scope, so the throwing
+frame wears your URL (`https://you.app/x:1:19`, "global code") and looked like your
+code. Now: when the message names one of these globals, every frame is marked
+`in_app: false` (it's the browser's code, not yours), and the error is fingerprinted
+by the injected global — so the whole class, across pages and both race shapes
+(`.reader` vs `Can't find variable`), collapses into a single grouped, de-emphasised
+issue instead of thousands of per-page reds. Same family as the `iabjs://` in-app
+browser handling. No public API change.
+
 ## [1.10.2] — 2026-07-22
 
 **First published 1.10.x — same SDK, release pipeline fully green.** 1.10.0/1.10.1

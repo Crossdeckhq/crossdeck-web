@@ -32,7 +32,12 @@
  *     signal.
  */
 
-import { parseStack, fingerprintError, type StackFrame } from "./stack-parser";
+import {
+  parseStack,
+  fingerprintError,
+  demoteVendorInjectedFrames,
+  type StackFrame,
+} from "./stack-parser";
 import type { BreadcrumbBuffer, Breadcrumb } from "./breadcrumbs";
 
 export type ErrorLevel = "error" | "warning" | "info";
@@ -583,7 +588,11 @@ export class ErrorTracker {
       "Unknown error"
     ).slice(0, 1024);
     const stack = err instanceof Error ? err.stack ?? null : null;
-    const frames = parseStack(stack);
+    // Force in_app:false on frames when the message is a browser-injected
+    // global (window.__firefox__, __gCrWeb, …) — those throw in the page's
+    // scope so the frame wears the customer's URL, but the code is the
+    // browser's, not the app's. No-op for ordinary errors.
+    const frames = demoteVendorInjectedFrames(parseStack(stack), message);
     const errorType = payload.errorType ?? null;
 
     const context = payload.extras
@@ -624,7 +633,11 @@ export class ErrorTracker {
     const payload = coerceErrorPayload(err);
     const message = (payload.message || "Unknown error").slice(0, 1024);
     const stack = err instanceof Error ? err.stack ?? null : null;
-    const frames = parseStack(stack);
+    // Force in_app:false on frames when the message is a browser-injected
+    // global (window.__firefox__, __gCrWeb, …) — those throw in the page's
+    // scope so the frame wears the customer's URL, but the code is the
+    // browser's, not the app's. No-op for ordinary errors.
+    const frames = demoteVendorInjectedFrames(parseStack(stack), message);
     const errorType = payload.errorType ?? null;
 
     const context = payload.extras

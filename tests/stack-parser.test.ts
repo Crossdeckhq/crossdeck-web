@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { parseStack, fingerprintError } from "../src/stack-parser";
+import {
+  parseStack,
+  fingerprintError,
+  injectedGlobalName,
+  demoteVendorInjectedFrames,
+} from "../src/stack-parser";
 
 describe("parseStack — Chrome format", () => {
   it("parses 'at Object.fn (file:line:col)'", () => {
@@ -78,6 +83,60 @@ describe("in_app detection", () => {
   it("marks app code as in-app", () => {
     const frames = parseStack(`at fn (https://myapp.com/dist/app.js:42:18)`);
     expect(frames[0]!.in_app).toBe(true);
+  });
+});
+
+describe("browser-injected globals — in_app:false + collapse to one issue", () => {
+  // The throwing frame wears the customer's own page URL (the injected script
+  // runs in the page's global scope), so parseStack marks it in_app by filename.
+  const pageFrame = () =>
+    parseStack("global code@https://biotree.bio/wny1wakd:1:19");
+
+  it("detects the injected global named in the message", () => {
+    expect(
+      injectedGlobalName("undefined is not an object (evaluating 'window.__firefox__.reader')"),
+    ).toBe("__firefox__");
+    expect(injectedGlobalName("Can't find variable: __gCrWeb")).toBe("__gCrWeb");
+    expect(injectedGlobalName("zaloJSV2.postMessage failed")).toBe("zaloJSV2");
+    expect(injectedGlobalName("Cannot read properties of undefined (reading 'save')")).toBe(null);
+  });
+
+  it("forces every frame in_app:false when the message is an injected global", () => {
+    const raw = pageFrame();
+    expect(raw[0]!.in_app).toBe(true); // page-URL frame looks in_app by filename
+    const demoted = demoteVendorInjectedFrames(
+      raw,
+      "undefined is not an object (evaluating 'window.__firefox__.reader')",
+    );
+    expect(demoted[0]!.in_app).toBe(false);
+  });
+
+  it("leaves ordinary errors untouched (no false demotion)", () => {
+    const raw = parseStack("at save (https://myapp.com/app.js:42:1)");
+    const same = demoteVendorInjectedFrames(raw, "Cannot read properties of undefined");
+    expect(same[0]!.in_app).toBe(true);
+  });
+
+  it("collapses the __firefox__ pair (both race shapes, any page) into ONE fingerprint", () => {
+    const a = fingerprintError(
+      "undefined is not an object (evaluating 'window.__firefox__.reader')",
+      pageFrame(),
+      { filename: "https://biotree.bio/wny1wakd", lineno: 1, colno: 19 },
+    );
+    const b = fingerprintError(
+      "Can't find variable: __firefox__",
+      parseStack("global code@https://biotree.bio/OTHERPAGE:1:1"),
+      { filename: "https://biotree.bio/OTHERPAGE", lineno: 1, colno: 1 },
+    );
+    expect(a).toBe(b); // keyed on the global, not the page URL or the message
+  });
+
+  it("a real app error is NOT collapsed with the injected-global bucket", () => {
+    const real = fingerprintError("Cannot read properties of undefined", [
+      { function: "save", filename: "https://myapp.com/app.js", lineno: 42, colno: 1, in_app: true, raw: "" },
+    ]);
+    const injected = fingerprintError("Can't find variable: __firefox__", []);
+    expect(real).not.toBe(injected);
   });
 });
 

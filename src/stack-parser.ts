@@ -164,6 +164,45 @@ function isInAppFrame(filename: string): boolean {
 }
 
 /**
+ * Browser-private injected globals — objects a BROWSER (not the app) injects
+ * into every page's global scope. Unlike the `iabjs://` in-app-browser scheme,
+ * the injected content-script here throws in the PAGE's own scope, so the
+ * throwing frame's filename is the customer's URL (`https://app.com/x:1:19`,
+ * "global code") and looks in_app — even though the customer never wrote that
+ * global. We can't tell from the filename; the tell is the global's name in the
+ * MESSAGE. Curated allowlist (mirrors the Crossdeck backend classifier), NOT a
+ * broad `/__\w+__/` that would swallow real app globals (`__NEXT_DATA__`).
+ *   __firefox__  Firefox for iOS (reader-mode content script)
+ *   __gCrWeb     Chrome for iOS / Google WebViews
+ *   zaloJSV2     Zalo in-app browser
+ */
+const BROWSER_INJECTED_GLOBAL = /(__firefox__|__gCrWeb|zaloJSV2)/;
+
+/**
+ * The browser-private injected global named in the message, or null. E.g.
+ * "undefined is not an object (evaluating 'window.__firefox__.reader')" and
+ * "Can't find variable: __firefox__" both return "__firefox__".
+ */
+export function injectedGlobalName(message: string | undefined | null): string | null {
+  const m = BROWSER_INJECTED_GLOBAL.exec(message ?? "");
+  return m ? m[1]! : null;
+}
+
+/**
+ * When the error is a browser-injected-global throw, force EVERY frame
+ * `in_app: false` — the throw ran in the page's global scope but is the
+ * browser's own vendor code, not the developer's. No-op otherwise. Returns a
+ * new array only when it changes something.
+ */
+export function demoteVendorInjectedFrames(
+  frames: StackFrame[],
+  message: string | undefined | null,
+): StackFrame[] {
+  if (!injectedGlobalName(message)) return frames;
+  return frames.map((f) => (f.in_app ? { ...f, in_app: false } : f));
+}
+
+/**
  * Fingerprint an error for grouping. SHA-flavoured — we don't need
  * cryptographic strength, we need "two errors with the same call
  * site produce the same key". The Crossdeck backend may refine the
@@ -189,6 +228,15 @@ export function fingerprintError(
     errorType?: string | null;
   } | null,
 ): string {
+  // Browser-injected-global errors (window.__firefox__, __gCrWeb, …) throw in
+  // the page's global scope, so their only frame is the customer's own URL at
+  // `:1:N`. Keyed the normal way they'd fingerprint by that page URL and
+  // fragment per-page (and per-message: the `.reader` and `Can't find variable`
+  // races would be separate issues). Key on the injected GLOBAL instead so the
+  // whole class collapses to one demoted issue, regardless of page or race shape.
+  const injected = injectedGlobalName(message);
+  if (injected) return djb2Hex(`injected-global:${injected}`);
+
   const inAppFrames = frames.filter((f) => f.in_app).slice(0, 3);
   const parts = [
     (message || "").slice(0, 200),

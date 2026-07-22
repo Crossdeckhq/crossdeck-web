@@ -1,6 +1,6 @@
 {
   "name": "@cross-deck/web",
-  "version": "1.10.2",
+  "version": "1.10.3",
   "description": "Crossdeck SDK for browsers and Node.js — verified subscriptions, entitlements, and product telemetry in one client.",
   "license": "MIT",
   "homepage": "https://cross-deck.com",
