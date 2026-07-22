@@ -355,6 +355,7 @@ export class AutoTracker {
     }
 
     const onVisChange = (): void => {
+      try {
       if (!this.session) return;
       const doc = (globalThis as { document: Document }).document;
       if (doc.visibilityState === "hidden") {
@@ -387,6 +388,14 @@ export class AutoTracker {
           this.session.hiddenAt = null;
         }
       }
+      } catch {
+        // Unload-time defense. This handler runs during page teardown, where
+        // in-app browsers (Instagram/Facebook's `iabjs://`, TikTok, …) hook
+        // browser APIs and throw from their OWN teardown ("Java object is
+        // gone"). A throw here would propagate to window.onerror and the SDK
+        // would self-report the host shell's noise as the developer's error.
+        // The page is going away; nothing here can be meaningfully handled.
+      }
     };
 
     // A page unload is NOT a session end — on a multi-page site it's a
@@ -395,7 +404,10 @@ export class AutoTracker {
     // accurate. The session ends only on real 30-min inactivity or an
     // explicit uninstall(). (This is what stopped the per-navigation
     // session.ended / session.started churn.)
-    const onPageHide = (): void => this.persistSession();
+    // try/catch for the same unload-teardown reason as onVisChange above.
+    const onPageHide = (): void => {
+      try { this.persistSession(); } catch { /* unload teardown — swallow */ }
+    };
 
     const w = (globalThis as { window: Window }).window;
     const doc = (globalThis as { document: Document }).document;

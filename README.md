@@ -97,6 +97,8 @@ Every event — auto-tracked and developer-emitted — is enriched with the devi
 
 **Per-session acquisition (v0.6.0+):** when a session starts the SDK reads `window.location.search` and `document.referrer` and captures `utm_source`, `utm_medium`, `utm_campaign`, `utm_content`, `utm_term`, plus `referrer`. Non-empty values are auto-attached to every subsequent event of that session — first-touch attribution stays pinned to the entry URL even after SPA route changes strip the params away, and now stays pinned across full-page navigations within the session too. A new session (>30 min idle) re-reads the URL.
 
+**Campaign-arrival connect (v1.10.0+):** when a page is reached from a Crossdeck-tagged campaign link, the landing URL carries an opaque `cd_ref` tag (a partner contact id — never an email). On session start the SDK posts it once to the arrival endpoint so the backend can bind this anonymous session to the tagged person and pull their integration record (e.g. HubSpot deals/pipeline) onto their journey — no login required. It's automatic (no method to call), browser-only, fire-and-forget (never throws, never blocks page init), and idempotent server-side. A later real `identify(userId)` still converges the same person.
+
 ## Auto-attached device info
 
 Every event's `properties` is enriched with whatever the SDK can detect:
@@ -254,7 +256,7 @@ Diagnostic snapshot — useful for development consoles and bug reports:
   anonymousId: "anon_…",
   crossdeckCustomerId: "cdcust_…" | null,
   developerUserId: "user_…" | null,
-  sdkVersion: "1.9.0",
+  sdkVersion: "1.9.1",
   baseUrl: "https://api.cross-deck.com/v1",
   entitlements: { count: 2, lastUpdated: 1717891200000 },
   events: { buffered: 0, dropped: 0, inFlight: 0, lastFlushAt: 1717891200000, lastError: null },
@@ -276,8 +278,8 @@ CrossdeckContracts.byId("per-user-cache-isolation");
 CrossdeckContracts.byPillar("entitlements");
 CrossdeckContracts.withStatus("proposed");
 CrossdeckContracts.findByTestName("identify(B) makes A's entitlements unreachable from in-memory");
-CrossdeckContracts.sdkVersion;        // "1.9.0"
-CrossdeckContracts.bundledIn;         // "@cross-deck/web@1.9.0"
+CrossdeckContracts.sdkVersion;        // "1.9.1"
+CrossdeckContracts.bundledIn;         // "@cross-deck/web@1.9.1"
 ```
 
 The `Contract` type is exported alongside; the binary-stability promise (which fields are guaranteed across patch/minor releases) is documented inline on `src/contracts.ts` and in [`contracts/README.md`](https://github.com/VistaApps-za/crossdeck/blob/main/contracts/README.md).

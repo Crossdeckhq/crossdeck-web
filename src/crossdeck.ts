@@ -554,6 +554,17 @@ export class CrossdeckClient {
       void this.heartbeat().catch(() => undefined);
     }
 
+    // ----- Campaign-arrival connect (the integration moat) -----
+    // If this page was reached from a Crossdeck-tagged campaign link, the
+    // landing URL carries an opaque `cd_ref` tag (the partner contact id —
+    // never an email). Post it once so the backend binds THIS session to
+    // that person and pulls their integration record (deals, pipeline)
+    // onto their journey. Fire-and-forget, browser-only, backend-idempotent
+    // — never blocks init, never affects the page.
+    if (!localDevMode) {
+      void this.captureCampaignArrival().catch(() => undefined);
+    }
+
     // ────────────────────────────────────────────────────────────────
     // Contract verifier layer — install LAST so the SDK is fully
     // constructed before any verifier observes its state. See
@@ -735,6 +746,34 @@ export class CrossdeckClient {
       );
     }
     this.init(options);
+  }
+
+  /**
+   * Campaign-arrival connect. If the landing URL carries a Crossdeck tag
+   * (`cd_ref`), post it to the arrival endpoint so the backend binds this
+   * anonymous session to the tagged person and pulls their integration
+   * record (deals, pipeline) onto their journey. Browser-only; fire-and-
+   * forget (never throws); backend-idempotent so a re-fire is harmless.
+   */
+  private async captureCampaignArrival(): Promise<void> {
+    const s = this.state;
+    if (!s) return;
+    const loc = (globalThis as { location?: { search?: string } }).location;
+    if (!loc || typeof loc.search !== "string" || loc.search.length === 0) return;
+    let ref: string | null = null;
+    try {
+      ref = new URLSearchParams(loc.search).get("cd_ref");
+    } catch {
+      return; // malformed query string — nothing to do.
+    }
+    if (!ref) return;
+    try {
+      await s.http.request<{ object: string }>("POST", "/integrations/hubspot/arrival", {
+        body: { anonymousId: s.identity.anonymousId, ref },
+      });
+    } catch {
+      // Fire-and-forget — a failed arrival connect must never affect the page.
+    }
   }
 
   /**
@@ -2042,10 +2081,17 @@ function installUnloadFlush(onUnload: () => void): () => void {
   const doc = (globalThis as { document?: Document }).document;
   if (!w || !doc) return () => undefined;
 
+  // try/catch: these fire during page teardown, where in-app browsers
+  // (Instagram/Facebook's `iabjs://`, TikTok, …) hook browser APIs and throw
+  // from their own teardown. `onUnload` is itself fire-and-forget, but guard
+  // the handler boundary so no host-shell teardown throw can reach
+  // window.onerror and be self-reported as the developer's error.
   const onVisChange = (): void => {
-    if (doc.visibilityState === "hidden") onUnload();
+    try { if (doc.visibilityState === "hidden") onUnload(); } catch { /* unload teardown — swallow */ }
   };
-  const onTerminal = (): void => onUnload();
+  const onTerminal = (): void => {
+    try { onUnload(); } catch { /* unload teardown — swallow */ }
+  };
 
   doc.addEventListener("visibilitychange", onVisChange);
   w.addEventListener("pagehide", onTerminal);

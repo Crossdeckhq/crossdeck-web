@@ -148,6 +148,12 @@ function buildFrame(input: {
 function isInAppFrame(filename: string): boolean {
   if (!filename) return true;
   if (/^(?:chrome|moz|safari|webkit)-extension:\/\//.test(filename)) return false;
+  // In-app-browser injected scripts — Meta's Instagram/Facebook Android WebView
+  // (`iabjs://…navigation_performance_logger…`), TikTok, etc. This is vendor code
+  // the host app injects into its own WebView; it is NOT the developer's app, and
+  // marking it in_app falsely blames their code for the in-app browser's own errors.
+  if (/^iabjs:\/\//.test(filename)) return false;
+  if (/^(?:webview|inappbrowser):\/\//i.test(filename)) return false;
   if (/\bcdn\.jsdelivr\.net\b/.test(filename)) return false;
   if (/\bunpkg\.com\b/.test(filename)) return false;
   if (/\bgoogletagmanager\.com\b/.test(filename)) return false;

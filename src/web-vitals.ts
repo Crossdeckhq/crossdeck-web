@@ -149,17 +149,27 @@ export class WebVitalsTracker {
     // Flush LCP / CLS / INP at page-hidden — the final values are only
     // known after the user stops interacting.
     const flush = (): void => {
-      if (lcpValue > 0 && !this.flushed.has("lcp")) {
-        this.flushed.add("lcp");
-        this.report("webvitals.lcp", { valueMs: Math.round(lcpValue) });
-      }
-      if (this.cls > 0 && !this.flushed.has("cls")) {
-        this.flushed.add("cls");
-        this.report("webvitals.cls", { value: Math.round(this.cls * 1000) / 1000 });
-      }
-      if (this.inp > 0 && !this.flushed.has("inp")) {
-        this.flushed.add("inp");
-        this.report("webvitals.inp", { valueMs: Math.round(this.inp) });
+      // Unload-time defense: this fires on pagehide / visibilitychange→hidden,
+      // and `report` enqueues (and can flush) through browser transport APIs
+      // that in-app browsers (Instagram/Facebook's `iabjs://`, …) hook and
+      // throw from during their own teardown. Swallow so the host shell's
+      // teardown noise never propagates to window.onerror and gets
+      // self-reported as the developer's error. The page is going away.
+      try {
+        if (lcpValue > 0 && !this.flushed.has("lcp")) {
+          this.flushed.add("lcp");
+          this.report("webvitals.lcp", { valueMs: Math.round(lcpValue) });
+        }
+        if (this.cls > 0 && !this.flushed.has("cls")) {
+          this.flushed.add("cls");
+          this.report("webvitals.cls", { value: Math.round(this.cls * 1000) / 1000 });
+        }
+        if (this.inp > 0 && !this.flushed.has("inp")) {
+          this.flushed.add("inp");
+          this.report("webvitals.inp", { valueMs: Math.round(this.inp) });
+        }
+      } catch {
+        /* unload teardown — swallow */
       }
     };
     const onHidden = (): void => {

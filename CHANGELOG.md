@@ -2,6 +2,40 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] — 2026-07-22
+
+**Added — campaign-arrival connect (the HubSpot identity bridge).** When a page is
+reached from a Crossdeck-tagged campaign link, the landing URL carries an opaque
+`cd_ref` tag (the partner contact id — **never an email**). On session start the
+SDK posts `{ anonymousId, ref }` once to the arrival endpoint, so the backend binds
+this anonymous session to the tagged person and pulls their integration record
+(deals, pipeline) onto their journey — no login required. A later real login still
+converges (the anon anchor leaves `developerUserId` free — never a blind email
+merge). Browser-only, fire-and-forget (never throws, never blocks init), and
+backend-idempotent so a re-fire is harmless. Automatic; no new public method.
+
+**Fixed — don't manufacture noise from in-app browsers.** Instagram/Facebook's
+Android in-app browser injects its own script (`iabjs://…`) into its WebView and,
+during page teardown, its Java bridge is garbage-collected and throws
+`Error invoking …: Java object is gone`. Two changes so the SDK never turns the
+host shell's own teardown into the developer's error:
+
+- **Unload handlers are now exception-safe.** The SDK's terminal-flush and
+  session-persist work fires on `pagehide` / `beforeunload` /
+  `visibilitychange→hidden` — exactly when the in-app browser hooks browser APIs
+  and throws from its own teardown. Every such handler (auto-track session
+  persist, web-vitals flush, the shared unload flush) now swallows a throw at the
+  handler boundary, so a host-shell teardown error can no longer propagate to
+  `window.onerror` and be self-reported. The page is going away; nothing there can
+  be meaningfully handled.
+- **Injected in-app-browser frames are no longer marked `in_app`.** The stack
+  parser treats `iabjs://` / `webview://` / `inappbrowser://` frames as
+  third-party (like extension frames), so the dashboard's "your code vs library
+  code" view no longer attributes the in-app browser's errors to the developer.
+
+No new or changed public methods (campaign-arrival is automatic; the iabjs work is
+internal robustness).
+
 ## [1.9.1] — 2026-06-30
 
 **Docs — knowledge-backbone governance release.** No runtime API change. This
