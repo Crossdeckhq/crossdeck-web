@@ -171,8 +171,12 @@ const distDir = path.resolve(new URL(".", import.meta.url).pathname, "../dist");
 const BUDGETS = [
   { file: "index.mjs", maxGzipKb: 62, label: "core ESM" },
   { file: "index.cjs", maxGzipKb: 62, label: "core CJS" },
-  { file: "react.mjs", maxGzipKb: 55, label: "react ESM" },
-  { file: "vue.mjs", maxGzipKb: 55, label: "vue ESM" },
+  // Budgets nudged v1.11.0 (Jul 2026) — cross-subdomain identity (resolveCookieDomain
+  // registrable-domain walk-up + CookieStorage domain support). react/vue bundle the
+  // core, so react landed at 55.07 over the old 55. Raise react + vue 55 → 57 for a
+  // ~2 KB margin; core ESM/CJS (60.2/60.6) stay under their 62 ceiling, UMD unchanged.
+  { file: "react.mjs", maxGzipKb: 57, label: "react ESM" },
+  { file: "vue.mjs", maxGzipKb: 57, label: "vue ESM" },
   { file: "crossdeck.umd.min.js", maxGzipKb: 35, label: "UMD min" },
 ];
 

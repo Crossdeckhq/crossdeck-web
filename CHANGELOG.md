@@ -2,6 +2,13 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.1] — 2026-07-23
+
+**Republish of 1.11.0 — release-pipeline fix only, identical SDK.** 1.11.0 never
+reached npm: the react/vue bundle crossed its size budget by ~70 bytes (they bundle
+the core, which grew with the cross-subdomain identity feature). Budget raised
+55 → 57 KB. No SDK change from 1.11.0 — see that entry.
+
 ## [1.11.0] — 2026-07-23
 
 **Added — cross-subdomain identity (marketing ↔ app is now ONE person).** Until now
