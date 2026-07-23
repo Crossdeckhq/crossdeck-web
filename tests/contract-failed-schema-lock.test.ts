@@ -146,7 +146,7 @@ describe("contract-failed schema-lock — Web", () => {
       // resolves through customer configuration. The exact value is
       // pinned so a key-rotation is a visible diff.
       expect(DIAGNOSTIC_TELEMETRY_PUBLISHABLE_KEY).toBe(
-        "cd_pub_live_9490e7aa029c432abf",
+        "cd_pub_live_eea2f84dbb834a45b7",
       );
     });
   });

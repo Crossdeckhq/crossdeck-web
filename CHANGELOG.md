@@ -2,6 +2,11 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.2] — 2026-07-23
+
+- **Reliability telemetry re-pointed to the live project.** The internal `crossdeck.contract_failed` self-check channel used a retired reliability-workspace key that had begun returning `401 invalid_api_key`, silently dropping failures; it now targets the live "Crossdeck Health Check" project. Internal SDK-health only — never touches your dashboard or your app.
+- **`reset()` no longer re-mints the `anonymousId` when no user was ever identified.** It still clears session state (super-properties, groups, breadcrumbs, clock) but only rotates the anonymous id on a real logout (after `identify()`). This stops the common auth-mirroring wiring `onAuthStateChanged(u => u ? identify() : reset())` from fragmenting one anonymous visitor into a new person on every page load.
+
 ## [1.11.1] — 2026-07-23
 
 **Republish of 1.11.0 — release-pipeline fix only, identical SDK.** 1.11.0 never

@@ -1758,7 +1758,14 @@ export class CrossdeckClient {
     // the identity lifetime. Web Vitals stay attached too — their
     // observers are per-page-life, not per-identity.
     this.state.autoTracker?.uninstall();
-    this.state.identity.reset();
+    // Only churn the anonymousId on a REAL logout (there was an identified
+    // user). Skipping the re-mint when anonymous is the fragmentation fix:
+    // auth-mirroring that fires reset() on every anonymous page load
+    // (onAuthStateChanged → else reset()) must NOT re-mint the anon id per
+    // page — that fragments one visitor into a new person per navigation
+    // (CD-135 dogfood; hardened here so no customer trips the same wire).
+    // Everything else below still clears this session's accumulated state.
+    if (this.state.developerUserId) this.state.identity.reset();
     // Clear the read-cost actor too: from here, browser reads attribute to no
     // user (the next session re-identifies). Matches the entitlement wipe below.
     bridgeReadCost({ actor: undefined });

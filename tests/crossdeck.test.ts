@@ -472,6 +472,20 @@ describe("reset", () => {
     expect(diag.developerUserId).toBeNull();
     expect(diag.events.buffered).toBe(0);
   });
+
+  it("is a no-op when never identified — preserves the anonymousId (CD-134 anti-fragmentation)", () => {
+    // The footgun: auth-mirroring that fires reset() on every anonymous
+    // page load must NOT churn the anon id (that fragments one visitor
+    // into a new person per page). reset() honours its documented
+    // "no-op on a never-identified anonymous device" contract.
+    const c = newClient();
+    const before = c.diagnostics().anonymousId;
+    c.reset();
+    c.reset(); // idempotent — still the same anon
+    const diag = c.diagnostics();
+    expect(diag.anonymousId).toBe(before);
+    expect(diag.developerUserId).toBeNull();
+  });
 });
 
 describe("syncPurchases", () => {
