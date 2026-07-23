@@ -2,6 +2,27 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.0] — 2026-07-23
+
+**Added — cross-subdomain identity (marketing ↔ app is now ONE person).** Until now
+the anonymous-ID cookie was host-only, so a visitor on your marketing site
+(`example.com`) and your app (`app.example.com`) were two different anonymous
+people — first-touch source, journey, and conversion never stitched across the
+hop. Now the SDK scopes that cookie to the **registrable domain** by default, so a
+visitor is one identity across every subdomain of your site. The whole funnel —
+anonymous marketing visit → true source (referrer/UTM) → signup → revenue → errors
+— lands on one timeline.
+
+- New `cookieDomain` option: `"auto"` (default — the registrable domain, detected
+  the GA4 way: probe from the broadest candidate up, take the broadest the browser
+  accepts, so public suffixes like `.co.za`/`.com` are skipped with no bundled
+  list); an explicit domain (`".example.com"`); or `"none"` for the old host-only
+  behaviour. No config needed for the common case — it just works.
+- **Non-breaking for existing identities:** localStorage still wins on read, so a
+  returning visitor keeps their id; it's simply also written to the shared domain
+  cookie now. Node/native are unaffected (cookies + subdomains are browser-only;
+  cross-*device* identity is resolved server-side by email/userId).
+
 ## [1.10.3] — 2026-07-22
 
 **Fixed — browser-injected globals no longer blamed on your code.** A browser (not

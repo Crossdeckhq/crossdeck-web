@@ -118,6 +118,20 @@ export interface CrossdeckOptions {
   /** Storage key prefix for the SDK's persisted state. Default "crossdeck:". */
   storagePrefix?: string;
   /**
+   * Cross-subdomain identity. The anonymous-ID cookie is scoped to this domain so
+   * a visitor is ONE person across every subdomain — your marketing site
+   * (`example.com`) and your app (`app.example.com`) share one identity, so
+   * first-touch source, journey, and conversion stitch into one timeline.
+   *
+   *   - `"auto"` (default) — the registrable domain (eTLD+1), detected safely.
+   *   - a domain string (`".example.com"` / `"example.com"`) — set it explicitly.
+   *   - `"none"` — host-only (each subdomain is its own identity; pre-1.11 behaviour).
+   *
+   * No effect in Node/native — cookies + subdomains are browser-only. Cross-*device*
+   * / cross-platform identity is resolved server-side by email/userId, not here.
+   */
+  cookieDomain?: string;
+  /**
    * Send a heartbeat to /v1/sdk/heartbeat on start(). Default true.
    * Disable for high-frequency boot scenarios where the heartbeat is
    * pure overhead.

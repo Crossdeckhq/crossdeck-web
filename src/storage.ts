@@ -83,15 +83,24 @@ export class CookieStorage implements KeyValueStorage {
   private readonly maxAgeSec: number;
   private readonly secure: boolean;
   private readonly sameSite: "Lax" | "Strict" | "None";
+  /**
+   * Cookie `Domain=` (e.g. `.cross-deck.com`). When set, the cookie is shared
+   * across every SUBDOMAIN of that registrable domain — so a visitor who lands
+   * on the marketing site (`cross-deck.com`) and then the app (`app.cross-deck.com`)
+   * is ONE anonymous person, not two. Empty → host-only (the previous behaviour).
+   */
+  private readonly domain: string | undefined;
 
   constructor(options?: {
     maxAgeSec?: number;
     secure?: boolean;
     sameSite?: "Lax" | "Strict" | "None";
+    domain?: string;
   }) {
     this.maxAgeSec = options?.maxAgeSec ?? 63_072_000; // 2 years
     this.secure = options?.secure ?? defaultSecure();
     this.sameSite = options?.sameSite ?? "Lax";
+    this.domain = options?.domain || undefined;
   }
 
   getItem(key: string): string | null {
@@ -120,6 +129,7 @@ export class CookieStorage implements KeyValueStorage {
       `Max-Age=${this.maxAgeSec}`,
       `SameSite=${this.sameSite}`,
     ];
+    if (this.domain) parts.push(`Domain=${this.domain}`);
     if (this.secure) parts.push("Secure");
     try {
       doc.cookie = parts.join("; ");
@@ -141,6 +151,7 @@ export class CookieStorage implements KeyValueStorage {
       "Max-Age=0",
       `SameSite=${this.sameSite}`,
     ];
+    if (this.domain) parts.push(`Domain=${this.domain}`);
     if (this.secure) parts.push("Secure");
     try {
       doc.cookie = parts.join("; ");
@@ -148,6 +159,51 @@ export class CookieStorage implements KeyValueStorage {
       // Same reasoning as setItem — swallow.
     }
   }
+}
+
+/**
+ * Resolve the `cookieDomain` option into a concrete `Domain=` value (or undefined
+ * for host-only). This is what makes marketing↔app one identity across subdomains.
+ *
+ *   - a concrete string ("cross-deck.com" / ".cross-deck.com") → normalised to a
+ *     leading-dot domain and used as-is (the customer told us their domain).
+ *   - "auto" (the default) → the registrable domain (eTLD+1), found the GA4 way:
+ *     walk from the broadest 2-label candidate up, set a throwaway test cookie at
+ *     each, and take the BROADEST the browser actually accepts. A public suffix
+ *     (`.co.za`, `.com`) is rejected by the browser, so the walk naturally skips
+ *     it and lands on the true registrable domain — no bundled public-suffix list.
+ *   - undefined / "none" / localhost / a bare IP → host-only (no cross-subdomain).
+ */
+export function resolveCookieDomain(config?: string): string | undefined {
+  if (config === undefined || config === "none" || config === "") return undefined;
+  if (config !== "auto") {
+    const d = config.trim().toLowerCase();
+    return d.startsWith(".") ? d : `.${d}`;
+  }
+  // "auto"
+  if (!hasDocument()) return undefined;
+  const doc = (globalThis as { document: Document }).document;
+  const loc = (globalThis as { location?: { hostname?: string } }).location;
+  const host = (loc?.hostname ?? "").toLowerCase();
+  if (!host || host === "localhost" || /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.indexOf(".") === -1) {
+    return undefined; // localhost / IP / single-label → no domain cookie possible
+  }
+  const labels = host.split(".");
+  for (let i = labels.length - 2; i >= 0; i--) {
+    const candidate = "." + labels.slice(i).join(".");
+    const testKey = "__cd_domain_probe";
+    try {
+      doc.cookie = `${testKey}=1; Domain=${candidate}; Path=/; SameSite=Lax`;
+      const accepted = doc.cookie.indexOf(`${testKey}=1`) !== -1;
+      // Always clean up the probe.
+      doc.cookie = `${testKey}=; Domain=${candidate}; Path=/; Max-Age=0; SameSite=Lax`;
+      if (accepted) return candidate; // broadest domain the browser allowed
+    } catch {
+      // document.cookie blocked (sandboxed) → give up, host-only.
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 /**

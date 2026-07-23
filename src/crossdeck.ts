@@ -39,7 +39,7 @@ import { EntitlementCache, type EntitlementsListener } from "./entitlement-cache
 import { deriveIdempotencyKeyForPurchase } from "./idempotency-key";
 import { EventQueue, type QueuedEvent } from "./event-queue";
 import { PersistentEventStore } from "./event-storage";
-import { CookieStorage, detectDefaultStorage, MemoryStorage } from "./storage";
+import { CookieStorage, detectDefaultStorage, MemoryStorage, resolveCookieDomain } from "./storage";
 import { randomChars } from "./identity";
 import { bridgeReadCost } from "./read-cost-bridge";
 import { collectDeviceInfo, type DeviceInfo } from "./device-info";
@@ -128,6 +128,9 @@ interface InternalState {
       | "verifyContractsAtBoot"
       | "logVerifierResults"
       | "disableContractAssertions"
+      // Consumed at construction (scopes the redundancy cookie); not stored in
+      // the resolved options struct.
+      | "cookieDomain"
     >
   > & {
     sdkVersion: string;
@@ -328,7 +331,12 @@ export class CrossdeckClient {
       persistIdentity &&
       !options.storage &&  // honour caller's adapter choice
       typeof (globalThis as { document?: unknown }).document !== "undefined";
-    const cookieStore = useCookieRedundancy ? new CookieStorage() : undefined;
+    // Cross-subdomain identity (default "auto"): scope the redundancy cookie to
+    // the registrable domain so marketing↔app is ONE anonymous person. See
+    // resolveCookieDomain + CrossdeckOptions.cookieDomain.
+    const cookieStore = useCookieRedundancy
+      ? new CookieStorage({ domain: resolveCookieDomain(options.cookieDomain ?? "auto") })
+      : undefined;
     const identity = new IdentityStore(effectiveStorage, opts.storagePrefix, cookieStore);
     // Durable last-known-good entitlement cache — persisted through the
     // same storage as identity so isEntitled() answers from device cache
