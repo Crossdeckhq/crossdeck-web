@@ -97,7 +97,18 @@ Every event — auto-tracked and developer-emitted — is enriched with the devi
 
 **Cross-subdomain identity (v1.11.0+).** A visitor is **one person across every subdomain** of your site — your marketing site (`example.com`) and your app (`app.example.com`) share one anonymous identity, so first-touch source, journey, and conversion stitch into one timeline instead of splitting at the hop. The SDK scopes its identity cookie to your **registrable domain** by default (`cookieDomain: "auto"`); set an explicit `cookieDomain: ".example.com"` to pin it, or `"none"` for host-only. Cross-*device* identity (same person, phone + laptop) is resolved server-side by `identify(userId)` — this is the browser half.
 
-**Per-session acquisition (v0.6.0+):** when a session starts the SDK reads `window.location.search` and `document.referrer` and captures `utm_source`, `utm_medium`, `utm_campaign`, `utm_content`, `utm_term`, plus `referrer`. Non-empty values are auto-attached to every subsequent event of that session — first-touch attribution stays pinned to the entry URL even after SPA route changes strip the params away, and now stays pinned across full-page navigations within the session too. A new session (>30 min idle) re-reads the URL.
+**Per-session acquisition (v0.6.0+):** when a session starts the SDK reads `window.location.search` and `document.referrer` and captures `utm_source`, `utm_medium`, `utm_campaign`, `utm_content`, `utm_term`, plus `referrer`. It also captures the paid-traffic click ids many platforms send *instead of* UTMs — `gclid`, `fbclid`, `msclkid`, `ttclid`, `li_fat_id`, `twclid`. Non-empty values are auto-attached to every subsequent event of that session — attribution stays pinned to the entry URL even after SPA route changes strip the params away, and across full-page navigations within the session.
+
+**First-touch origin survives the visit (v1.12.0+).** The touch that *won* a visitor now outlives the session that captured it, and the subdomain hop to your app.
+
+Previously a new session re-read the current URL, so a visitor who arrived from a campaign on Monday, returned directly on Tuesday and signed up on Wednesday converted with **empty** acquisition — the channel that actually won them was overwritten by a visit carrying no params. Now:
+
+- The **first touch carrying a real signal** (any `utm_*` or click id) is persisted **write-once**. A later session that lands with no params **restores it**, so the conversion still carries its source.
+- It is stored in **both** localStorage and the shared registrable-domain cookie — the same dual store as identity — so origin captured on `example.com` is still known on `app.example.com`. Without the cookie leg, localStorage is per-origin and every acquisition dies at exactly the hop where signup happens.
+- **`referrer` alone is not a touch.** Every visit has one; treating it as a signal would freeze the first referrer forever and stop any genuine campaign registering. `referrer` always describes the *current* visit.
+- Not last-touch-wins: a newer campaign is the current touch for its own session, but the stored first touch is never overwritten.
+
+Consent posture is unchanged — with `persistIdentity: false` (or a `MemoryStorage` adapter) nothing is persisted and behaviour falls back to the current page.
 
 **Campaign-arrival connect (v1.10.0+):** when a page is reached from a Crossdeck-tagged campaign link, the landing URL carries an opaque `cd_ref` tag (a partner contact id — never an email). On session start the SDK posts it once to the arrival endpoint so the backend can bind this anonymous session to the tagged person and pull their integration record (e.g. HubSpot deals/pipeline) onto their journey — no login required. It's automatic (no method to call), browser-only, fire-and-forget (never throws, never blocks page init), and idempotent server-side. A later real `identify(userId)` still converges the same person.
 
@@ -239,6 +250,8 @@ Manually send a heartbeat. Called automatically by `init()` unless `autoHeartbea
 ### `Crossdeck.reset()`
 
 Wipe persisted identity + EVERY per-user entitlement cache slot on this device + queued events. Call on logout. The next session generates a fresh `anonymousId` and starts a clean identity-graph entry. The per-user scope of the cache wipe (introduced v1.4.0) means a shared-device logout cannot leave a separate user's entitlements readable from `localStorage`.
+
+> **Call it on a real sign-out only — never on your auth listener's "not signed in yet" boot callback.** `reset()` is not a no-op on an anonymous device: it deletes the `anonymousId` from every store (including the shared cross-subdomain cookie) and mints a new one. Resetting on boot re-anonymises the visitor on every page load, so the pre-signup journey they arrived with — true source, UTMs, what they read — is orphaned from the account they create moments later. Latch that you have actually seen a signed-in user before treating a `null` as a sign-out. See [Guard `reset()`](https://cross-deck.com/docs/identify-users/#guard-reset).
 
 ### `Crossdeck.flush()`
 

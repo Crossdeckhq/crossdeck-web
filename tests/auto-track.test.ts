@@ -548,3 +548,101 @@ describe("AutoTracker — nextSeq() (Envelope v1 §3)", () => {
     expect(t.nextSeq()).toBe(1); // increments monotonically
   });
 });
+
+/* ===========================================================================
+ * CD-134 — first-touch origin survival.
+ *
+ * The touch that WINS a visitor must outlive both the session that captured
+ * it and the subdomain hop to the app, or the eventual signup converts as
+ * "direct" and the acquisition question is unanswerable.
+ * ======================================================================== */
+describe("first-touch origin survival (CD-134)", () => {
+  /** Start a session and read the acquisition it captured. */
+  function sessionAcquisition(
+    storage: MemoryStorage | null,
+    cookieStorage: MemoryStorage | null,
+  ) {
+    const ctx = makeContext();
+    const t = new AutoTracker(
+      { ...DEFAULT_AUTO_TRACK, pageViews: false, clicks: false },
+      ctx.track,
+      {
+        storage: storage ?? undefined,
+        storageKey: "crossdeck:session",
+        cookieStorage: cookieStorage ?? undefined,
+      },
+    );
+    activeTrackers.push(t);
+    t.install();
+    return t.currentAcquisition;
+  }
+
+  it("keeps the winning campaign when a later session lands with no params", () => {
+    const storage = new MemoryStorage();
+
+    // Monday: arrives from a LinkedIn campaign.
+    window.history.replaceState(null, "", "/?utm_source=linkedin&utm_campaign=launch");
+    const first = sessionAcquisition(storage, null);
+    expect(first.utm_source).toBe("linkedin");
+
+    // Tuesday: a genuine NEW session. A new tracker RESUMES a stored session
+    // by design, so drop the continuity record — the first-touch key stays.
+    storage.removeItem("crossdeck:session");
+    window.history.replaceState(null, "", "/pricing");
+    const later = sessionAcquisition(storage, null);
+
+    // Without first-touch survival this would be "" and the signup would
+    // convert as direct, losing the channel that actually won them.
+    expect(later.utm_source).toBe("linkedin");
+    expect(later.utm_campaign).toBe("launch");
+  });
+
+  it("carries the origin across the subdomain hop via the shared cookie", () => {
+    // localStorage is per-origin, so the app subdomain gets a FRESH primary
+    // store; only the registrable-domain cookie is shared between them.
+    const marketingLocal = new MemoryStorage();
+    const sharedCookie = new MemoryStorage();
+
+    window.history.replaceState(null, "", "/?utm_source=linkedin&utm_medium=social");
+    expect(sessionAcquisition(marketingLocal, sharedCookie).utm_source).toBe("linkedin");
+
+    // app.example.com — different origin: empty localStorage, same cookie.
+    const appLocal = new MemoryStorage();
+    window.history.replaceState(null, "", "/signup");
+    const onApp = sessionAcquisition(appLocal, sharedCookie);
+
+    expect(onApp.utm_source).toBe("linkedin");
+    expect(onApp.utm_medium).toBe("social");
+  });
+
+  it("does not treat referrer alone as a touch (a real campaign must still register)", () => {
+    const storage = new MemoryStorage();
+
+    // A plain visit with no campaign params must NOT freeze a first touch...
+    window.history.replaceState(null, "", "/");
+    sessionAcquisition(storage, null);
+
+    // ...so a genuine campaign arriving later is still recorded as the origin.
+    storage.removeItem("crossdeck:session");
+    window.history.replaceState(null, "", "/?utm_source=newsletter");
+    expect(sessionAcquisition(storage, null).utm_source).toBe("newsletter");
+  });
+
+  it("is write-once — a later campaign never overwrites the first touch", () => {
+    const storage = new MemoryStorage();
+
+    window.history.replaceState(null, "", "/?utm_source=linkedin");
+    expect(sessionAcquisition(storage, null).utm_source).toBe("linkedin");
+
+    // A second campaign is the CURRENT touch for its own session...
+    storage.removeItem("crossdeck:session");
+    window.history.replaceState(null, "", "/?utm_source=facebook");
+    expect(sessionAcquisition(storage, null).utm_source).toBe("facebook");
+
+    // ...but the stored first touch is untouched, so a later direct visit
+    // still restores the channel that originally won them.
+    storage.removeItem("crossdeck:session");
+    window.history.replaceState(null, "", "/");
+    expect(sessionAcquisition(storage, null).utm_source).toBe("linkedin");
+  });
+});

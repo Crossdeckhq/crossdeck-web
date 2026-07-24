@@ -493,7 +493,15 @@ export class CrossdeckClient {
         // a visit survives full-page navigations (multi-page sites
         // re-install the SDK on every page) and honours the same consent
         // posture — MemoryStorage when identity persistence is off.
-        { storage: effectiveStorage, storageKey: opts.storagePrefix + "session" },
+        // cookieStorage is the SAME registrable-domain cookie identity uses.
+        // First-touch origin rides it so the campaign that won a visitor on the
+        // marketing site is still known when they land on the app subdomain —
+        // localStorage alone is per-origin and would lose it at exactly that hop.
+        {
+          storage: effectiveStorage,
+          storageKey: opts.storagePrefix + "session",
+          cookieStorage: cookieStore ?? undefined,
+        },
       );
       this.state.autoTracker = tracker;
       tracker.install();

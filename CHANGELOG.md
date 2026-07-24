@@ -2,6 +2,12 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] — 2026-07-24
+
+- **First-touch origin now survives the session boundary AND the subdomain hop.** Acquisition (`utm_*`, `referrer`, and the click ids `gclid`/`fbclid`/`msclkid`/`ttclid`/`li_fat_id`/`twclid`) was captured per session off the current URL, so a visitor who arrived from a campaign, returned later with no params, and then signed up converted with **empty** acquisition — the channel that won them was overwritten. And because `localStorage` is per-origin, a visitor acquired on a marketing site reached the app subdomain with no memory of the campaign at all, which is exactly where signup happens. The first touch carrying a real signal (any `utm_*` or click id) is now persisted **write-once** and restored whenever a later session lands with none, and it is written to **both** `localStorage` and the shared registrable-domain cookie — the same dual store as identity — so it crosses `example.com` → `app.example.com`.
+- **`referrer` alone is deliberately not treated as a touch.** Every visit has one; counting it would freeze the first referrer permanently and stop any genuine campaign ever registering. `referrer` always describes the current visit.
+- Not last-touch-wins: a newer campaign is the current touch for its own session, but never overwrites the stored first touch. Consent posture unchanged — with `persistIdentity: false` (or a `MemoryStorage` adapter) nothing is persisted and behaviour falls back to the current page.
+
 ## [1.11.2] — 2026-07-23
 
 - **Reliability telemetry re-pointed to the live project.** The internal `crossdeck.contract_failed` self-check channel used a retired reliability-workspace key that had begun returning `401 invalid_api_key`, silently dropping failures; it now targets the live "Crossdeck Health Check" project. Internal SDK-health only — never touches your dashboard or your app.

@@ -201,13 +201,24 @@ export class AutoTracker {
    */
   private pageviewId: string | null = null;
 
+  /**
+   * Secondary (cookie) store, scoped to the registrable domain — the SAME
+   * instance identity uses. First-touch origin is written to BOTH stores so it
+   * survives the marketing→app subdomain hop: localStorage is per-origin, so a
+   * visitor acquired on `example.com` would otherwise land on `app.example.com`
+   * with no memory of the campaign that won them, and convert as "direct".
+   * Null outside browsers or when identity persistence is off for consent.
+   */
+  private readonly cookieStorage: KeyValueStorage | null;
+
   constructor(
     private readonly cfg: AutoTrackConfig,
     private readonly track: TrackFn,
-    opts?: { storage?: KeyValueStorage; storageKey?: string },
+    opts?: { storage?: KeyValueStorage; storageKey?: string; cookieStorage?: KeyValueStorage },
   ) {
     this.storage = opts?.storage ?? null;
     this.sessionKey = opts?.storageKey ?? SESSION_STORAGE_KEY;
+    this.cookieStorage = opts?.cookieStorage ?? null;
   }
 
   install(): void {
@@ -435,8 +446,79 @@ export class AutoTracker {
       lastActivityAt: now,
       hiddenAt: null,
       endedSent: false,
-      acquisition: captureAcquisition(),
+      acquisition: this.resolveAcquisition(),
     };
+  }
+
+  /**
+   * Session acquisition, with FIRST-TOUCH survival across sessions.
+   *
+   * WHY: `captureAcquisition()` reads the CURRENT page. That is correct for a
+   * fresh arrival, but a session boundary (30-min idle, or a return visit next
+   * week) starts a new session — and a visitor returning directly has no utm_*
+   * and no click id, so the acquisition that actually WON them was silently
+   * replaced with empty. Someone who arrives from LinkedIn on Monday, returns
+   * direct on Tuesday and signs up on Wednesday converted with no source at all.
+   *
+   * That is exactly the question the product exists to answer — "where did this
+   * PAYING CUSTOMER come from" — so origin has to outlive the session that
+   * captured it. We persist the first touch that carried a real signal and,
+   * whenever a later session arrives with nothing, fall back to it.
+   *
+   * Deliberately NOT last-touch-wins: a real new campaign click overwrites
+   * nothing, it simply records a newer touch for that session while the stored
+   * first touch stays put. Write-once by design.
+   */
+  private resolveAcquisition(): SessionAcquisition {
+    const current = captureAcquisition();
+    if (!this.storage && !this.cookieStorage) return current;
+
+    const key = `${this.sessionKey}_origin_first`;
+
+    // Read prefers localStorage (higher fidelity, survives cookie caps) and
+    // falls back to the shared-domain cookie — which is the leg that carries
+    // the origin ACROSS SUBDOMAINS. Same precedence as IdentityStore.
+    const readFirstTouch = (): string | null => {
+      try { const v = this.storage?.getItem(key); if (v) return v; } catch { /* private mode */ }
+      try { return this.cookieStorage?.getItem(key) ?? null; } catch { return null; }
+    };
+    // Write fans out to BOTH so a later clear of either doesn't lose the touch,
+    // and so the app subdomain can read what the marketing site captured.
+    const writeFirstTouch = (v: string): void => {
+      try { this.storage?.setItem(key, v); } catch { /* quota / private mode */ }
+      try { this.cookieStorage?.setItem(key, v); } catch { /* cookie blocked */ }
+    };
+
+    // A "real" signal is any campaign param or click id. `referrer` alone does
+    // not count — every visit has one, so treating it as a touch would freeze
+    // the first referrer forever and never let a genuine campaign register.
+    const hasSignal = (a: SessionAcquisition): boolean =>
+      Boolean(a.utm_source || a.utm_medium || a.utm_campaign || a.utm_content || a.utm_term
+        || a.gclid || a.fbclid || a.msclkid || a.ttclid || a.li_fat_id || a.twclid);
+
+    try {
+      if (hasSignal(current)) {
+        // First real touch wins and is never overwritten.
+        if (readFirstTouch() === null) writeFirstTouch(JSON.stringify(current));
+        return current;
+      }
+
+      // No signal on this page — restore the touch that won them, so the
+      // conversion still carries its source.
+      const raw = readFirstTouch();
+      if (raw) {
+        const stored = JSON.parse(raw) as Partial<SessionAcquisition>;
+        return {
+          ...EMPTY_ACQUISITION,
+          ...stored,
+          // Referrer always describes THIS visit, never the remembered one.
+          referrer: current.referrer,
+        };
+      }
+    } catch {
+      // Quota, private mode, malformed JSON — degrade to the current page.
+    }
+    return current;
   }
 
   /**
