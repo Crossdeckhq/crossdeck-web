@@ -2,7 +2,13 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.1] — 2026-07-24
+
+**Republish of 1.12.0 — release-pipeline only, identical SDK.** 1.12.0 never reached npm: the release gate correctly failed it on the bundle budget, and by the time the budget fix landed the `v1.12.0` tag already existed on the public mirror, which refuses to overwrite a published artefact. Version bumped so the release can be cut cleanly. No SDK code changed — see 1.12.0 below for what actually shipped.
+
 ## [1.12.0] — 2026-07-24
+
+**Bundle budget raised: core ESM/CJS 62 → 63 KB, UMD 35 → 36 KB (gzipped).** The first-touch origin persistence below adds ~0.5 KB of real code — the write-once store, the dual localStorage/cookie read-write, and the signal test. Core CJS measured 62.47 KB against a 62 KB budget and the UMD build 35.14 KB against 35 KB, so the release gate correctly stopped the publish. The budget is raised deliberately, with this note, per the gate's own rule — not silenced. Crossdeck still ships analytics + revenue + errors in roughly what single-purpose SDKs charge for one.
 
 - **First-touch origin now survives the session boundary AND the subdomain hop.** Acquisition (`utm_*`, `referrer`, and the click ids `gclid`/`fbclid`/`msclkid`/`ttclid`/`li_fat_id`/`twclid`) was captured per session off the current URL, so a visitor who arrived from a campaign, returned later with no params, and then signed up converted with **empty** acquisition — the channel that won them was overwritten. And because `localStorage` is per-origin, a visitor acquired on a marketing site reached the app subdomain with no memory of the campaign at all, which is exactly where signup happens. The first touch carrying a real signal (any `utm_*` or click id) is now persisted **write-once** and restored whenever a later session lands with none, and it is written to **both** `localStorage` and the shared registrable-domain cookie — the same dual store as identity — so it crosses `example.com` → `app.example.com`.
 - **`referrer` alone is deliberately not treated as a touch.** Every visit has one; counting it would freeze the first referrer permanently and stop any genuine campaign ever registering. `referrer` always describes the current visit.
