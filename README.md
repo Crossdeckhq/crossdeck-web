@@ -83,6 +83,41 @@ That's the full happy path.
 - **Boot heartbeat.** On `init()` the SDK pings `/v1/sdk/heartbeat` so the dashboard's Apps page can show you "last seen" per install. Disable with `autoHeartbeat: false`.
 - **Stripe-style errors.** Every async method throws `CrossdeckError` with `type`, `code`, `requestId`, and `status` — same shape as Stripe's SDKs, so generic error handlers transfer.
 
+## Crossdeck Trust — human-proof at signup
+
+Render the branded **Crossdeck Trust** panel and mint a single-use attestation that proves
+a real browser loaded your page. It's a cross-origin iframe (un-restylable, identical on
+every install); the SDK hands you the token programmatically — no hidden field, no DOM.
+
+```jsx
+// React — @cross-deck/web/react
+import { CrossdeckTrust } from "@cross-deck/web/react";
+
+<CrossdeckTrust onToken={(t) => setTrustToken(t.token)} />
+// or headless:  const { ref, token, status } = useTrustToken();  // <div ref={ref} />
+```
+
+```vue
+<!-- Vue — @cross-deck/web/vue -->
+<script setup>
+import { useTrustToken } from "@cross-deck/web/vue";
+const { el, token } = useTrustToken();
+</script>
+<template><div ref="el" /></template>
+```
+
+```js
+// No framework:
+const { ready } = Crossdeck.trust.panel({ target: "#cd-trust" });
+const { token } = await ready;   // { token, expiresAt } | { token: null }
+```
+
+The publishable key comes from your `init()`. Send `token` to your server and verify it at
+the gate (`crossdeck.trust.gate({ email, ip, token })` in `@cross-deck/node`). **Fail-open:**
+if the panel can't mint (adblocker, offline, outage) you get `{ token: null }`, the signup
+proceeds, and the server scores the absent token — it never throws and never blocks your
+form.
+
 ## Auto-tracked events
 
 | Event | When |

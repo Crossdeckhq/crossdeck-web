@@ -28,9 +28,11 @@
  * SDK ships).
  */
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createElement, useEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { Crossdeck } from "./crossdeck";
 import type { CrossdeckOptions } from "./types";
+import type { TrustToken, TrustTokenStatus } from "./trust";
+export type { TrustTokenStatus };
 
 // ─────────────────────────────────────────────────────────────────
 // <CrossdeckProvider> — one-line React integration.
@@ -250,4 +252,97 @@ function safeListKeys(): readonly string[] {
   } catch {
     return [];
   }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Crossdeck Trust — the human-proof panel as a first-class React surface.
+//
+// <CrossdeckTrust onToken={...} /> renders the branded, un-restylable Trust
+// iframe and hands you the minted token. `useTrustToken()` is the headless
+// equivalent for when you want the value in state. Both sit on
+// `Crossdeck.trust.panel(...)`, take the publishable key from the Provider's
+// init(), and are fail-open: if the panel can't mint, your signup still works
+// and the server scores the absent token. Never throws, never blocks the form.
+// ─────────────────────────────────────────────────────────────────
+
+export interface CrossdeckTrustProps {
+  /** Called once when the panel mints a token. Pass `t.token` to your gate call. */
+  onToken?: (t: TrustToken) => void;
+  /**
+   * Called if the panel could not mint (adblocker, offline, our outage, timeout).
+   * INFORMATIONAL — not an error to handle. The signup should still proceed.
+   */
+  onUnavailable?: (reason: string) => void;
+  /** Class on the wrapper element the panel mounts into. */
+  className?: string;
+  /** Inline style on the wrapper element. */
+  style?: CSSProperties;
+  /** id on the wrapper element. */
+  id?: string;
+}
+
+/**
+ * `<CrossdeckTrust onToken={setToken} />` — drop it on your signup form. Renders
+ * the same cross-origin Trust panel every install gets, mints a single-use
+ * attestation, and calls `onToken` with it. SSR-safe (mounts on the client).
+ */
+export function CrossdeckTrust(props: CrossdeckTrustProps): ReactNode {
+  const { onToken, onUnavailable, className, style, id } = props;
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  // Keep the latest callbacks without re-mounting the panel on every render.
+  const onTokenRef = useRef(onToken);
+  onTokenRef.current = onToken;
+  const onUnavailRef = useRef(onUnavailable);
+  onUnavailRef.current = onUnavailable;
+
+  useEffect(() => {
+    if (!hostRef.current) return;
+    const handle = Crossdeck.trust.panel({
+      target: hostRef.current,
+      onToken: (t) => onTokenRef.current?.(t),
+      onUnavailable: (r) => onUnavailRef.current?.(r),
+    });
+    return () => handle.destroy();
+    // Mount once — the panel mints once per lifecycle. Re-mount to re-mint.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return createElement("div", { ref: hostRef, className, style, id });
+}
+
+/**
+ * Headless Trust — mount the panel and read the token from React state.
+ *
+ * @example
+ * const { ref, token, status } = useTrustToken();
+ * return <><input name="email" /><div ref={ref} /></>;
+ * // then send `token` to your server; `status` is "pending" | "ready" | "unavailable".
+ */
+export function useTrustToken(): {
+  /** Attach to the element the panel should mount into: `<div ref={ref} />`. */
+  ref: RefObject<HTMLDivElement | null>;
+  /** The minted token, or null until it mints (or if the panel failed open). */
+  token: string | null;
+  /** Lifecycle: pending → ready (minted) or unavailable (failed open). */
+  status: TrustTokenStatus;
+} {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [token, setToken] = useState<string | null>(null);
+  const [status, setStatus] = useState<TrustTokenStatus>("pending");
+
+  useEffect(() => {
+    if (!ref.current) return;
+    const handle = Crossdeck.trust.panel({
+      target: ref.current,
+      onToken: (t) => {
+        setToken(t.token);
+        setStatus("ready");
+      },
+      onUnavailable: () => setStatus("unavailable"),
+    });
+    return () => handle.destroy();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return { ref, token, status };
 }

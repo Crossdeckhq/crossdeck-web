@@ -8,6 +8,19 @@
 
 export { Crossdeck, CrossdeckClient } from "./crossdeck";
 export { CrossdeckError } from "./errors";
+// Crossdeck Trust — the human-proof panel. `Crossdeck.trust.panel(...)` is the
+// usual entry; `mountTrustPanel` is the framework-agnostic core for non-SDK use.
+export { mountTrustPanel, TRUST_PANEL_ORIGIN } from "./trust";
+export type {
+  TrustToken,
+  TrustUnavailable,
+  TrustResult,
+  TrustTokenStatus,
+  TrustPanelHandle,
+  TrustPanelInput,
+  MountTrustPanelOptions,
+  CrossdeckTrustNamespace,
+} from "./trust";
 export { MemoryStorage } from "./storage";
 export { SDK_NAME, SDK_VERSION, DEFAULT_BASE_URL } from "./http";
 export { CROSSDECK_ERROR_CODES, getErrorCode } from "./error-codes";

@@ -35,6 +35,8 @@
 import { CrossdeckError } from "./errors";
 import { HttpClient, SDK_NAME, SDK_VERSION, DEFAULT_BASE_URL } from "./http";
 import { IdentityStore } from "./identity";
+import { mountTrustPanel } from "./trust";
+import type { TrustPanelHandle, TrustPanelInput, CrossdeckTrustNamespace } from "./trust";
 import { EntitlementCache, type EntitlementsListener } from "./entitlement-cache";
 import { deriveIdempotencyKeyForPurchase } from "./idempotency-key";
 import { EventQueue, type QueuedEvent } from "./event-queue";
@@ -1908,6 +1910,32 @@ export class CrossdeckClient {
    */
   getAnonymousId(): string | null {
     return this.state ? this.state.identity.anonymousId : null;
+  }
+
+  /**
+   * **Crossdeck Trust** — human-proof at your signup, native to the SDK.
+   *
+   * `Crossdeck.trust.panel({ target, onToken })` renders the branded, un-restylable
+   * Trust panel (the same cross-origin iframe on every install) and mints a
+   * single-use attestation. Hand the token to your server and verify it at the gate
+   * (`crossdeck.trust.gate(...)` in @cross-deck/node). The publishable key is taken
+   * from your `init()` — you don't pass it again.
+   *
+   * Fail-open by contract: if the panel can't mint (adblocker, offline, our outage),
+   * `ready` resolves with `{ token: null }` and your signup proceeds — the server
+   * scores the missing token. It never throws and never blocks your form.
+   *
+   * @example
+   * const { ready } = Crossdeck.trust.panel({ target: "#cd-trust" });
+   * const result = await ready;                 // { token, expiresAt } | { token: null }
+   * await createUser({ email, cdTrustToken: result.token });
+   */
+  get trust(): CrossdeckTrustNamespace {
+    const publicKey = this.state ? this.state.options.publicKey : "";
+    return {
+      panel: (input: TrustPanelInput): TrustPanelHandle =>
+        mountTrustPanel({ ...input, publicKey }),
+    };
   }
 
   // ---------- private helpers ----------

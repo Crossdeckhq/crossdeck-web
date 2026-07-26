@@ -20,6 +20,8 @@
 
 import { ref, onMounted, onScopeDispose, type Ref } from "vue";
 import { Crossdeck } from "./crossdeck";
+import type { TrustTokenStatus } from "./trust";
+export type { TrustTokenStatus };
 
 /**
  * Reactive entitlement check. Returns a `Ref<boolean>` that updates
@@ -74,6 +76,51 @@ export function useEntitlements(): Ref<readonly string[]> {
   });
 
   return r;
+}
+
+/**
+ * Crossdeck Trust — the human-proof panel as a Vue composable.
+ *
+ * Bind `el` to the element the panel mounts into; read `token` / `status`
+ * reactively. Sits on `Crossdeck.trust.panel(...)`, takes the publishable key
+ * from `init()`, and is fail-open (can't mint → status "unavailable", signup
+ * still proceeds, server scores the absent token). Never throws.
+ *
+ * @example
+ * <script setup>
+ * import { useTrustToken } from "@cross-deck/web/vue";
+ * const { el, token, status } = useTrustToken();
+ * </script>
+ * <template><div ref="el" /></template>
+ */
+export function useTrustToken(): {
+  /** Template ref — bind to the mount element: `<div ref="el" />`. */
+  el: Ref<HTMLElement | null>;
+  /** The minted token, or null until it mints (or if the panel failed open). */
+  token: Ref<string | null>;
+  /** Lifecycle: pending → ready (minted) or unavailable (failed open). */
+  status: Ref<TrustTokenStatus>;
+} {
+  const el = ref<HTMLElement | null>(null);
+  const token = ref<string | null>(null);
+  const status = ref<TrustTokenStatus>("pending");
+
+  onMounted(() => {
+    if (!el.value) return;
+    const handle = Crossdeck.trust.panel({
+      target: el.value,
+      onToken: (t) => {
+        token.value = t.token;
+        status.value = "ready";
+      },
+      onUnavailable: () => {
+        status.value = "unavailable";
+      },
+    });
+    onScopeDispose(() => handle.destroy());
+  });
+
+  return { el, token, status };
 }
 
 function safeIsEntitled(key: string): boolean {

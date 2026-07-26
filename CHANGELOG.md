@@ -2,6 +2,16 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.0] — 2026-07-26
+
+**Crossdeck Trust — the human-proof panel, native to the SDK.** Render the branded, un-restylable Trust panel (the same cross-origin `trust.cross-deck.com` iframe on every install) and mint a single-use attestation, handed back to you programmatically — no hidden field, no DOM.
+
+- **React** (`@cross-deck/web/react`): `<CrossdeckTrust onToken={...} />` and the headless `useTrustToken()` hook.
+- **Vue** (`@cross-deck/web/vue`): `useTrustToken()` composable.
+- **Core**: `Crossdeck.trust.panel({ target, onToken })` (the publishable key comes from your `init()`), plus the framework-agnostic `mountTrustPanel()` for non-SDK use.
+
+Pass the token to your server and verify it at the gate (`crossdeck.trust.gate({ email, ip, token })` in `@cross-deck/node`). **Bank-grade behaviour:** isolated (a stumble in the panel never throws into your app or breaks your signup form), origin-locked (only our panel window can deliver a token), and **fail-open, never fail-allow** — if the panel can't mint (adblocker, offline, our outage) you get `{ token: null }`, the signup proceeds, and the server scores the absent token. Failing *closed* would hand an attacker a site-wide-outage weapon, so we never do. The `<script src=".../embed.js">` loader remains the no-SDK / static-HTML path.
+
 ## [1.12.1] — 2026-07-24
 
 **Republish of 1.12.0 — release-pipeline only, identical SDK.** 1.12.0 never reached npm: the release gate correctly failed it on the bundle budget, and by the time the budget fix landed the `v1.12.0` tag already existed on the public mirror, which refuses to overwrite a published artefact. Version bumped so the release can be cut cleanly. No SDK code changed — see 1.12.0 below for what actually shipped.

@@ -168,16 +168,19 @@ const distDir = path.resolve(new URL(".", import.meta.url).pathname, "../dist");
 // defense, ~0.2 KB). core CJS landed at 60.08 over the old 60 ceiling, core ESM
 // at 59.60 right against it. Raise core ESM + CJS 60 → 62 for a ~2 KB margin.
 // react/vue (54.5 / 54.3) and UMD stay under and are left unchanged.
+//
+// Budgets nudged v1.13.0 (Jul 2026) — Crossdeck Trust, the human-proof panel
+// native to the SDK (trust.ts engine + Crossdeck.trust namespace + React
+// <CrossdeckTrust>/useTrustToken + Vue useTrustToken). ~0.8 KB gzipped of real
+// code: core ESM landed at 63.61 / CJS 64.10 over the old 63; react 57.86 / vue
+// 57.51 over the old 57; UMD 36.00 against the old 36. Raise core ESM/CJS 63 → 65,
+// react/vue 57 → 59, UMD 36 → 37 — each ~1 KB above current for a safety margin.
 const BUDGETS = [
-  { file: "index.mjs", maxGzipKb: 63, label: "core ESM" },
-  { file: "index.cjs", maxGzipKb: 63, label: "core CJS" },
-  // Budgets nudged v1.11.0 (Jul 2026) — cross-subdomain identity (resolveCookieDomain
-  // registrable-domain walk-up + CookieStorage domain support). react/vue bundle the
-  // core, so react landed at 55.07 over the old 55. Raise react + vue 55 → 57 for a
-  // ~2 KB margin; core ESM/CJS (60.2/60.6) stay under their 62 ceiling, UMD unchanged.
-  { file: "react.mjs", maxGzipKb: 57, label: "react ESM" },
-  { file: "vue.mjs", maxGzipKb: 57, label: "vue ESM" },
-  { file: "crossdeck.umd.min.js", maxGzipKb: 36, label: "UMD min" },
+  { file: "index.mjs", maxGzipKb: 65, label: "core ESM" },
+  { file: "index.cjs", maxGzipKb: 65, label: "core CJS" },
+  { file: "react.mjs", maxGzipKb: 59, label: "react ESM" },
+  { file: "vue.mjs", maxGzipKb: 59, label: "vue ESM" },
+  { file: "crossdeck.umd.min.js", maxGzipKb: 37, label: "UMD min" },
 ];
 
 let failed = false;
