@@ -266,6 +266,12 @@ function safeListKeys(): readonly string[] {
 // ─────────────────────────────────────────────────────────────────
 
 export interface CrossdeckTrustProps {
+  /**
+   * The project's publishable key (cd_pub_…). Pass it here — the robust, explicit way
+   * (like Stripe / Turnstile) — and no `Crossdeck.init()` / `<CrossdeckProvider>` is
+   * needed. Omit it and the SDK falls back to the key from `init()`.
+   */
+  publicKey?: string;
   /** Called once when the panel mints a token. Pass `t.token` to your gate call. */
   onToken?: (t: TrustToken) => void;
   /**
@@ -287,7 +293,7 @@ export interface CrossdeckTrustProps {
  * attestation, and calls `onToken` with it. SSR-safe (mounts on the client).
  */
 export function CrossdeckTrust(props: CrossdeckTrustProps): ReactNode {
-  const { onToken, onUnavailable, className, style, id } = props;
+  const { publicKey, onToken, onUnavailable, className, style, id } = props;
   const hostRef = useRef<HTMLDivElement | null>(null);
   // Keep the latest callbacks without re-mounting the panel on every render.
   const onTokenRef = useRef(onToken);
@@ -299,6 +305,7 @@ export function CrossdeckTrust(props: CrossdeckTrustProps): ReactNode {
     if (!hostRef.current) return;
     const handle = Crossdeck.trust.panel({
       target: hostRef.current,
+      publicKey,
       onToken: (t) => onTokenRef.current?.(t),
       onUnavailable: (r) => onUnavailRef.current?.(r),
     });
@@ -318,7 +325,10 @@ export function CrossdeckTrust(props: CrossdeckTrustProps): ReactNode {
  * return <><input name="email" /><div ref={ref} /></>;
  * // then send `token` to your server; `status` is "pending" | "ready" | "unavailable".
  */
-export function useTrustToken(): {
+export function useTrustToken(opts?: {
+  /** Explicit publishable key (cd_pub_…) — no `init()` needed. Falls back to init's key. */
+  publicKey?: string;
+}): {
   /** Attach to the element the panel should mount into: `<div ref={ref} />`. */
   ref: RefObject<HTMLDivElement | null>;
   /** The minted token, or null until it mints (or if the panel failed open). */
@@ -326,6 +336,7 @@ export function useTrustToken(): {
   /** Lifecycle: pending → ready (minted) or unavailable (failed open). */
   status: TrustTokenStatus;
 } {
+  const publicKey = opts?.publicKey;
   const ref = useRef<HTMLDivElement | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [status, setStatus] = useState<TrustTokenStatus>("pending");
@@ -334,6 +345,7 @@ export function useTrustToken(): {
     if (!ref.current) return;
     const handle = Crossdeck.trust.panel({
       target: ref.current,
+      publicKey,
       onToken: (t) => {
         setToken(t.token);
         setStatus("ready");

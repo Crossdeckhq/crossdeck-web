@@ -93,27 +93,28 @@ every install); the SDK hands you the token programmatically — no hidden field
 // React — @cross-deck/web/react
 import { CrossdeckTrust } from "@cross-deck/web/react";
 
-<CrossdeckTrust onToken={(t) => setTrustToken(t.token)} />
-// or headless:  const { ref, token, status } = useTrustToken();  // <div ref={ref} />
+<CrossdeckTrust publicKey="cd_pub_live_…" onToken={(t) => setTrustToken(t.token)} />
+// or headless:  const { ref, token, status } = useTrustToken({ publicKey: "cd_pub_live_…" });  // <div ref={ref} />
 ```
 
 ```vue
 <!-- Vue — @cross-deck/web/vue -->
 <script setup>
 import { useTrustToken } from "@cross-deck/web/vue";
-const { el, token } = useTrustToken();
+const { el, token } = useTrustToken({ publicKey: "cd_pub_live_…" });
 </script>
 <template><div ref="el" /></template>
 ```
 
 ```js
 // No framework:
-const { ready } = Crossdeck.trust.panel({ target: "#cd-trust" });
+const { ready } = Crossdeck.trust.panel({ target: "#cd-trust", publicKey: "cd_pub_live_…" });
 const { token } = await ready;   // { token, expiresAt } | { token: null }
 ```
 
-The publishable key comes from your `init()`. Send `token` to your server and verify it at
-the gate (`crossdeck.trust.gate({ email, ip, token })` in `@cross-deck/node`). **Fail-open:**
+Pass your publishable key to the panel directly (the Stripe / Turnstile pattern; it also
+falls back to `init()`'s key). Send `token` to your server and verify it at the gate
+(`crossdeck.trust.gate({ email, ip, token })` in `@cross-deck/node`). **Fail-open:**
 if the panel can't mint (adblocker, offline, outage) you get `{ token: null }`, the signup
 proceeds, and the server scores the absent token — it never throws and never blocks your
 form.

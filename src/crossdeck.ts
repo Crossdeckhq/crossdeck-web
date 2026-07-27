@@ -1933,8 +1933,11 @@ export class CrossdeckClient {
   get trust(): CrossdeckTrustNamespace {
     const publicKey = this.state ? this.state.options.publicKey : "";
     return {
+      // An EXPLICIT input.publicKey always wins (no init required); otherwise fall
+      // back to the key from init(). This makes the panel immune to init order and to
+      // separate-bundle singletons — pass the key and it always works.
       panel: (input: TrustPanelInput): TrustPanelHandle =>
-        mountTrustPanel({ ...input, publicKey }),
+        mountTrustPanel({ ...input, publicKey: input.publicKey || publicKey }),
     };
   }
 

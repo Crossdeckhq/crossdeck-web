@@ -2,6 +2,17 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.1] — 2026-07-27
+
+**Crossdeck Trust panel — the publishable key is now an explicit prop (Stripe / Turnstile pattern).** `<CrossdeckTrust>`, `useTrustToken()`, and `Crossdeck.trust.panel()` read the key from `Crossdeck.init()`, but `@cross-deck/web` and `@cross-deck/web/react` build as separate bundles with separate singleton instances — so an `init()` on one didn't reach the component's copy, and the panel mounted with no key (blank). Now you can pass it explicitly and skip `init()` entirely:
+
+```jsx
+<CrossdeckTrust publicKey="cd_pub_live_…" onToken={(t) => setToken(t.token)} />
+// or:  useTrustToken({ publicKey: "cd_pub_live_…" })  ·  Crossdeck.trust.panel({ publicKey, target })
+```
+
+Explicit `publicKey` always wins; omit it and the SDK still falls back to `init()`'s key. No hidden global state to get wrong.
+
 ## [1.13.0] — 2026-07-26
 
 **Crossdeck Trust — the human-proof panel, native to the SDK.** Render the branded, un-restylable Trust panel (the same cross-origin `trust.cross-deck.com` iframe on every install) and mint a single-use attestation, handed back to you programmatically — no hidden field, no DOM.

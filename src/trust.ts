@@ -91,7 +91,15 @@ export interface TrustPanelHandle {
  * Options for `Crossdeck.trust.panel(...)` — the same as {@link MountTrustPanelOptions}
  * but the SDK client injects `publicKey` from your `init()`, so you omit it.
  */
-export type TrustPanelInput = Omit<MountTrustPanelOptions, "publicKey">;
+export type TrustPanelInput = Omit<MountTrustPanelOptions, "publicKey"> & {
+  /**
+   * The project's publishable key (cd_pub_…). Pass it **explicitly** — the robust,
+   * Stripe (`loadStripe(pk)`) / Cloudflare Turnstile (`sitekey`) pattern — and the
+   * panel needs no `Crossdeck.init()` at all. Omit it and the SDK falls back to the
+   * key from `init()`. Explicit always wins.
+   */
+  publicKey?: string;
+};
 
 /** The `Crossdeck.trust` namespace surfaced on the SDK client. */
 export interface CrossdeckTrustNamespace {

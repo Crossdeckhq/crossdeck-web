@@ -93,7 +93,10 @@ export function useEntitlements(): Ref<readonly string[]> {
  * </script>
  * <template><div ref="el" /></template>
  */
-export function useTrustToken(): {
+export function useTrustToken(opts?: {
+  /** Explicit publishable key (cd_pub_…) — no `init()` needed. Falls back to init's key. */
+  publicKey?: string;
+}): {
   /** Template ref — bind to the mount element: `<div ref="el" />`. */
   el: Ref<HTMLElement | null>;
   /** The minted token, or null until it mints (or if the panel failed open). */
@@ -109,6 +112,7 @@ export function useTrustToken(): {
     if (!el.value) return;
     const handle = Crossdeck.trust.panel({
       target: el.value,
+      publicKey: opts?.publicKey,
       onToken: (t) => {
         token.value = t.token;
         status.value = "ready";
