@@ -175,11 +175,19 @@ const distDir = path.resolve(new URL(".", import.meta.url).pathname, "../dist");
 // code: core ESM landed at 63.61 / CJS 64.10 over the old 63; react 57.86 / vue
 // 57.51 over the old 57; UMD 36.00 against the old 36. Raise core ESM/CJS 63 → 65,
 // react/vue 57 → 59, UMD 36 → 37 — each ~1 KB above current for a safety margin.
+//
+// 2026-07-28 (CD-155): the registry-backed singleton (singleton.ts) that shares
+// ONE Crossdeck instance across every entry point — the fix for the duplicate-
+// singleton defect that showed a paying customer the paywall — is load-bearing
+// correctness code that ships in every bundle. It pushed core CJS to 65.24 and
+// react to 59.03, just over the old 65/59. Raise core ESM/CJS 65 → 67 and
+// react/vue 59 → 61 (~1.7 KB above current) so a tiny future change doesn't
+// refight the budget. UMD unaffected (registry code is trivially small).
 const BUDGETS = [
-  { file: "index.mjs", maxGzipKb: 65, label: "core ESM" },
-  { file: "index.cjs", maxGzipKb: 65, label: "core CJS" },
-  { file: "react.mjs", maxGzipKb: 59, label: "react ESM" },
-  { file: "vue.mjs", maxGzipKb: 59, label: "vue ESM" },
+  { file: "index.mjs", maxGzipKb: 67, label: "core ESM" },
+  { file: "index.cjs", maxGzipKb: 67, label: "core CJS" },
+  { file: "react.mjs", maxGzipKb: 61, label: "react ESM" },
+  { file: "vue.mjs", maxGzipKb: 61, label: "vue ESM" },
   { file: "crossdeck.umd.min.js", maxGzipKb: 37, label: "UMD min" },
 ];
 

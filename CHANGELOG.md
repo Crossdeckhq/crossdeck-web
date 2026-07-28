@@ -2,7 +2,7 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.13.4] — 2026-07-28
+## [1.13.5] — 2026-07-28
 
 **The real fix: `@cross-deck/web` and `@cross-deck/web/react` now share ONE SDK instance.** This is the definitive cause of a paying customer seeing "Upgrade to PRO" while the network showed their entitlement resolving correctly — and why the 1.13.2 / 1.13.3 cache fixes didn't clear it (they were correct, but operating on the wrong object).
 

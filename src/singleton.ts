@@ -43,12 +43,9 @@ if (
   typeof console !== "undefined"
 ) {
   console.warn(
-    "[crossdeck] The SDK singleton module was loaded more than once — " +
-      "@cross-deck/web appears to be bundled as duplicate copies across entry " +
-      "points (e.g. the core and /react bundles). All copies still resolve to " +
-      "ONE instance via the global registry, so entitlements/identity stay " +
-      "correct; but verify your bundler dedupes @cross-deck/web to keep the " +
-      "bundle lean.",
+    "[crossdeck] SDK singleton loaded more than once — @cross-deck/web is " +
+      "bundled as duplicate copies across entry points. Still ONE instance " +
+      "(global registry); dedupe your bundler to trim size.",
   );
 }
 g[MODULE_EVAL_KEY] = true;
