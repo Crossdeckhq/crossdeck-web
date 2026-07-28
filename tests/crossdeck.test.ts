@@ -183,52 +183,51 @@ describe("identify", () => {
 
   it("clears the entitlement cache when a DIFFERENT user identifies on the same device", async () => {
     // Existing semantic — the obvious cross-customer leak guard.
+    //
+    // Routed (not ordered) mock: identify() now asks the SERVER for the
+    // newly-identified user's entitlements (query-the-server-on-switch), so
+    // the exact number of /entitlements calls is an implementation detail we
+    // must not encode as a fixed mock sequence. The server is the authority:
+    // customer A is entitled to `pro`, customer B is entitled to nothing.
+    // The leak guard is proven by B reading false off B's OWN server answer —
+    // A's cached pro is both cleared AND never consulted.
     const c = newClient();
-    globalThis.fetch = vi
-      .fn()
-      // First identify resolves to cdcust_A
-      .mockResolvedValueOnce(
-        jsonResponse(200, {
+    let currentCustomer: "A" | "B" | null = null;
+    const proEntitlement = {
+      object: "entitlement",
+      key: "pro",
+      isActive: true,
+      validUntil: null,
+      source: { rail: "stripe", productId: "p", subscriptionId: "s" },
+      updatedAt: 1700000000,
+    };
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/identity/alias")) {
+        // First alias → user_A → cdcust_A; second → user_B → cdcust_B.
+        currentCustomer = currentCustomer === null ? "A" : "B";
+        return jsonResponse(200, {
           object: "alias_result",
-          crossdeckCustomerId: "cdcust_A",
+          crossdeckCustomerId: `cdcust_${currentCustomer}`,
           linked: [],
           mergePending: false,
           env: "production",
-        }),
-      )
-      // First getEntitlements warms cache with cdcust_A's pro entitlement
-      .mockResolvedValueOnce(
-        jsonResponse(200, {
-          object: "list",
-          data: [
-            {
-              object: "entitlement",
-              key: "pro",
-              isActive: true,
-              validUntil: null,
-              source: { rail: "stripe", productId: "p", subscriptionId: "s" },
-              updatedAt: 1700000000,
-            },
-          ],
-          crossdeckCustomerId: "cdcust_A",
-          env: "production",
-        }),
-      )
-      // Second identify resolves to cdcust_B (different user logs in)
-      .mockResolvedValueOnce(
-        jsonResponse(200, {
-          object: "alias_result",
-          crossdeckCustomerId: "cdcust_B",
-          linked: [],
-          mergePending: false,
-          env: "production",
-        }),
-      ) as unknown as typeof fetch;
+        });
+      }
+      // /entitlements — answer for whoever is currently identified.
+      return jsonResponse(200, {
+        object: "list",
+        data: currentCustomer === "A" ? [proEntitlement] : [],
+        crossdeckCustomerId: `cdcust_${currentCustomer}`,
+        env: "production",
+      });
+    }) as unknown as typeof fetch;
     await c.identify("user_A");
     await c.getEntitlements();
     expect(c.isEntitled("pro")).toBe(true);
     await c.identify("user_B");
-    // Cache cleared — cdcust_A's pro entitlement must NOT leak to user_B.
+    // Cache cleared — cdcust_A's pro entitlement must NOT leak to user_B, and
+    // user_B's own server answer (none) is what's read.
     expect(c.isEntitled("pro")).toBe(false);
     expect(c.listEntitlements()).toEqual([]);
   });
@@ -275,18 +274,26 @@ describe("identify", () => {
     expect(c.isEntitled("pro")).toBe(true);
     expect(c.diagnostics().crossdeckCustomerId).toBeNull();
 
-    globalThis.fetch = vi.fn().mockResolvedValue(
-      jsonResponse(200, {
+    // Route: the alias POST, plus an entitlements refresh the SERVER answers
+    // with NONE for this new user. identify() clears the anon slot, then asks
+    // the server (the authority that linked the anon customer via the alias) —
+    // it never silently inherits the anon `pro`.
+    globalThis.fetch = vi.fn(async (url: unknown) => {
+      const u = String(url);
+      if (u.includes("/entitlements")) {
+        return jsonResponse(200, { object: "list", data: [], crossdeckCustomerId: "cdcust_new_user" });
+      }
+      return jsonResponse(200, {
         object: "alias_result",
         crossdeckCustomerId: "cdcust_new_user",
         linked: [],
         mergePending: false,
         env: "production",
-      }),
-    ) as unknown as typeof fetch;
+      });
+    }) as unknown as typeof fetch;
     await c.identify("user_new");
-    // The new user identified — prior cache must be cleared, not
-    // silently inherited.
+    // The anon `pro` must NOT be inherited. The slot was cleared, then the
+    // server (the authority) was asked and returned none → false.
     expect(c.isEntitled("pro")).toBe(false);
     expect(c.listEntitlements()).toEqual([]);
   });
@@ -322,31 +329,36 @@ describe("getEntitlements + isEntitled", () => {
 
   it("uses customerId in query when cdcust is known", async () => {
     const c = newClient();
-    const fetchSpy = vi
-      .fn()
-      .mockResolvedValueOnce(
-        jsonResponse(200, {
+    // Routed mock: identify() itself now queries /entitlements for the
+    // just-resolved customer, so we assert on the /entitlements call by
+    // route rather than a fixed sequence index.
+    const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes("/identity/alias")) {
+        return jsonResponse(200, {
           object: "alias_result",
           crossdeckCustomerId: "cdcust_known",
           linked: [],
           mergePending: false,
           env: "production",
-        }),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse(200, {
-          object: "list",
-          data: [],
-          crossdeckCustomerId: "cdcust_known",
-          env: "production",
-        }),
-      );
+        });
+      }
+      return jsonResponse(200, {
+        object: "list",
+        data: [],
+        crossdeckCustomerId: "cdcust_known",
+        env: "production",
+      });
+    });
     globalThis.fetch = fetchSpy as unknown as typeof fetch;
 
     await c.identify("user_001");
     await c.getEntitlements();
-    const [url] = fetchSpy.mock.calls[1]!;
-    expect(url).toContain("customerId=cdcust_known");
+    const entitlementsCall = fetchSpy.mock.calls.find(([u]) =>
+      String(u).includes("/entitlements"),
+    );
+    expect(entitlementsCall).toBeDefined();
+    expect(String(entitlementsCall![0])).toContain("customerId=cdcust_known");
   });
 
   it("uses anonymousId when no cdcust + no userId", async () => {

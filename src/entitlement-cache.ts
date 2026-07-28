@@ -189,6 +189,37 @@ export class EntitlementCache {
     return this.all.slice();
   }
 
+  /**
+   * True iff the in-memory snapshot is exactly what the CURRENT slot holds in
+   * storage — i.e., it was hydrated from THIS slot, never leaked from another.
+   *
+   * This is the real per-user isolation invariant after a slot rotation: the
+   * snapshot is sourced from the new slot's storage — empty for a first-time
+   * user, or that user's OWN last-known-good for a returning one (the
+   * intentional rehydrate, layer (c) of setUserKey). It is NEVER the prior
+   * user's data. Asserting "empty after rotation" is too strict — it false-
+   * fails a returning user legitimately re-reading their own cache.
+   * Session-only (no storage) can't diverge, so it is trivially isolated.
+   */
+  snapshotMatchesCurrentSlot(): boolean {
+    if (!this.storage) return true;
+    let persisted: PublicEntitlement[] = [];
+    try {
+      const raw = this.storage.getItem(this.storageKey);
+      if (raw) {
+        const parsed = JSON.parse(raw) as PersistedCache;
+        if (parsed && parsed.v === 1 && Array.isArray(parsed.entitlements)) {
+          persisted = parsed.entitlements;
+        }
+      }
+    } catch {
+      return false;
+    }
+    const norm = (l: PublicEntitlement[]) =>
+      l.map((e) => `${e.key}|${e.isActive}|${e.validUntil}`).sort().join(",");
+    return norm(this.all) === norm(persisted);
+  }
+
   /** When the cache was last refreshed from the server. 0 means "never". */
   get freshness(): number {
     return this.lastUpdated;

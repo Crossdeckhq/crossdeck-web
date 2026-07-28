@@ -459,16 +459,25 @@ const VERIFIER_PER_USER_CACHE_ISOLATION: ContractVerifier = {
         // test this against the live cache via the public list()
         // accessor; the contract guarantees it returns the same
         // in-memory snapshot the cache holds.
-        if (obs.cache.list().length !== 0) {
+        // Isolation is: the snapshot after rotation is sourced from the NEW
+        // slot's storage — empty for a first-time user, or that user's OWN
+        // last-known-good for a returning one (the intentional rehydrate) —
+        // and NEVER the prior user's data. "Must be empty" was too strict: it
+        // false-failed a returning user legitimately re-reading their own
+        // cache (the ⚠️ that fired in production). Assert the real invariant.
+        if (
+          typeof obs.cache.snapshotMatchesCurrentSlot === "function" &&
+          !obs.cache.snapshotMatchesCurrentSlot()
+        ) {
           return fail(
             "per-user-cache-isolation",
-            "in-memory snapshot still held entitlements after slot rotation",
+            "in-memory snapshot diverged from the new slot's storage after rotation (possible leak)",
             nowMs() - t0,
           );
         }
         return pass(
           "per-user-cache-isolation",
-          `slot rotated ${shortSuffix(priorSuffix)} → ${shortSuffix(nextSuffix)}`,
+          `slot rotated ${shortSuffix(priorSuffix)} → ${shortSuffix(nextSuffix)} (sourced from new slot)`,
           nowMs() - t0,
         );
       }

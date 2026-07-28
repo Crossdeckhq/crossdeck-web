@@ -906,6 +906,24 @@ export class CrossdeckClient {
     });
     s.identity.setCrossdeckCustomerId(result.crossdeckCustomerId);
     s.developerUserId = userId;
+
+    // Refresh entitlements for the newly-identified user from the SERVER (the
+    // authoritative source) when their slot has no cached last-known-good yet.
+    // This is what makes isEntitled() correct immediately after
+    // `await identify()` WITHOUT inheriting the anonymous cache (P0 #5: a
+    // shared-device anon session must never silently become the new user's
+    // entitlements — the anon slot was just cleared by setUserKey above; only
+    // the server, which linked the anon customer via the alias, decides what
+    // this user is entitled to). A returning user with a warm slot skips the
+    // fetch. Best-effort: a failed refresh leaves the empty slot untouched and
+    // never fails identify() (its primary job — the alias — already succeeded).
+    if (s.entitlements.list().length === 0) {
+      try {
+        await this.getEntitlements();
+      } catch {
+        // Offline / transient: last-known-good (none for a first identify) stays.
+      }
+    }
     return result;
   }
 
@@ -1194,6 +1212,21 @@ export class CrossdeckClient {
     }
     if (result.crossdeckCustomerId) {
       s.identity.setCrossdeckCustomerId(result.crossdeckCustomerId);
+    }
+    if (!Array.isArray(result.data)) {
+      // Malformed response — the body parsed but carried no entitlement
+      // list (schema drift, a proxy that rewrote the body, a 200 with an
+      // error envelope). Treat it exactly like a failed refresh: keep the
+      // durable last-known-good, mark it stale, and surface the failure —
+      // never crash the caller and never clobber a paying customer's cache
+      // with garbage.
+      s.entitlements.markRefreshFailed();
+      throw new CrossdeckError({
+        type: "internal_error",
+        code: "malformed_entitlements_response",
+        message:
+          "GET /entitlements returned no entitlement list (expected an array at `data`).",
+      });
     }
     s.entitlements.setFromList(result.data);
     return result.data;

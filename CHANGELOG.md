@@ -2,6 +2,16 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.2] — 2026-07-28
+
+**`identify()` now settles entitlements from the server — `isEntitled()` is correct the moment `await identify()` resolves.** Previously, `identify()` switched the caller to the new user's local entitlement slot but never asked the server what that user is entitled to. A user who identified after signing in read `isEntitled("pro") === false` until the app separately called `getEntitlements()` — the footgun behind a paying customer briefly seeing the free experience. Now, when the newly-identified user's slot has no cached last-known-good, `identify()` queries the server (the authority) and settles the answer before it resolves.
+
+- **The identity switch decides off the server, not the anonymous cache.** The prior (anonymous) slot is still cleared on switch — a shared-device anon session never becomes the new user's entitlements (unchanged security property). The difference: instead of landing on an *empty* answer, the new user's entitlements come from the server, which resolved them via the same alias that linked their anonymous history.
+- **A returning user with a warm slot skips the fetch** and reads their own last-known-good instantly — no added latency, no flash of free.
+- **Best-effort, fail-open for payers.** If the refresh can't reach Crossdeck, `identify()` still succeeds (its job — the alias — already did) and last-known-good stands; a network blip never locks a paying customer out.
+- **`getEntitlements()` no longer crashes on a malformed response.** A `200` whose body carries no entitlement array (schema drift, a proxy that rewrote the body) now throws a clean `CrossdeckError` (`malformed_entitlements_response`) and preserves the durable cache, instead of a `TypeError`. The cache is never clobbered with garbage.
+- **Fixed a false-positive `per-user-cache-isolation` diagnostic.** The self-check flagged a ⚠️ when a returning user legitimately rehydrated their own entitlements. It now asserts the true invariant — the in-memory snapshot matches the *current* slot's storage (sourced from this user, never leaked from another) — instead of the too-strict "must be empty."
+
 ## [1.13.1] — 2026-07-27
 
 **Crossdeck Trust panel — the publishable key is now an explicit prop (Stripe / Turnstile pattern).** `<CrossdeckTrust>`, `useTrustToken()`, and `Crossdeck.trust.panel()` read the key from `Crossdeck.init()`, but `@cross-deck/web` and `@cross-deck/web/react` build as separate bundles with separate singleton instances — so an `init()` on one didn't reach the component's copy, and the panel mounted with no key (blank). Now you can pass it explicitly and skip `init()` entirely:
