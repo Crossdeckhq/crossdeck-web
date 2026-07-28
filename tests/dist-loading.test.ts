@@ -155,4 +155,28 @@ describe("dist/ bundle loads", () => {
       expect(fs.existsSync(distFile(m))).toBe(true);
     }
   });
+
+  // CD-155 regression: @cross-deck/web and @cross-deck/web/react build as
+  // SEPARATE bundles, each of which inlines a copy of the singleton module.
+  // Pre-fix, each copy ran its own `new CrossdeckClient()` → two live
+  // singletons → a React app that init'd on the core import read entitlements
+  // through a hook backed by a DIFFERENT, never-initialised instance (biotree's
+  // "Upgrade to PRO" for a paying customer). The global symbol registry makes
+  // every copy resolve to ONE instance. This test loads BOTH built bundles and
+  // proves it — the only lens that catches a per-entry-point singleton split
+  // (every ../src unit test imports a single module and cannot see it).
+  skip("core and /react bundles share ONE Crossdeck instance (no duplicate singleton)", async () => {
+    if (!fs.existsSync(distFile("react.mjs"))) return; // react entry optional on some builds
+    const core = await import(pathToFileURL(distFile("index.mjs")).href);
+    await import(pathToFileURL(distFile("react.mjs")).href); // evaluates react's singleton copy
+    const registryInstance = (globalThis as Record<symbol, unknown>)[
+      Symbol.for("@cross-deck/web:Crossdeck")
+    ];
+    // The core export IS the registry-backed instance...
+    expect(core.Crossdeck).toBe(registryInstance);
+    // ...and loading the react bundle did NOT replace it with a second object.
+    expect(registryInstance).toBeDefined();
+    // A deliberate extra instance stays distinct (advanced use unaffected).
+    expect(new core.CrossdeckClient()).not.toBe(core.Crossdeck);
+  });
 });

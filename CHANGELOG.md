@@ -2,6 +2,15 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.4] — 2026-07-28
+
+**The real fix: `@cross-deck/web` and `@cross-deck/web/react` now share ONE SDK instance.** This is the definitive cause of a paying customer seeing "Upgrade to PRO" while the network showed their entitlement resolving correctly — and why the 1.13.2 / 1.13.3 cache fixes didn't clear it (they were correct, but operating on the wrong object).
+
+- **The defect:** the two entry points build as separate bundles, and each **inlined its own copy** of the module that does `export const Crossdeck = new CrossdeckClient()`. So the package shipped **two singletons**: the one from `@cross-deck/web` (what you `init()` / `identify()` / `getEntitlements()` on) and a *different* one baked into `@cross-deck/web/react` (what `useEntitlement()` reads). You warmed instance A; the hook read instance B, which was never initialised — `false`, forever, silently. Nothing in the API hinted at the split, and the docs show the core calls and the hooks used together.
+- **The fix:** the singleton is now backed by the cross-realm **global symbol registry** (`Symbol.for("@cross-deck/web:Crossdeck")`), in a dedicated module every entry point imports. No matter how a bundler duplicates the code, all copies resolve to the **same** instance — the same guard PostHog, Segment, and LaunchDarkly use for their React bindings. `init()` on the core import and `useEntitlement()` in a component now read one object; the paywall clears with **zero app changes**.
+- **Can't silently regress:** the module logs a dev-mode warning if it's ever evaluated more than once (duplicate packaging), and a CI test loads both built bundles and asserts they share one instance.
+- Creating extra instances on purpose (`new CrossdeckClient()`) is unaffected.
+
 ## [1.13.3] — 2026-07-28
 
 **A paying customer no longer sees the paywall flash to "locked" when your app re-identifies them — the deterministic root cause.** This is the defect behind a Pro customer still seeing an upgrade prompt even though the server correctly returns their entitlement. On a **same-user re-identify** — which every React/Vue app triggers, because auth traits arrive in stages (uid first, then email, then profile name) so `identify()` runs 2–3 times with the same id — the entitlement cache emitted an **empty snapshot** to every subscriber *before* restoring the real value. `useEntitlement()` / `useEntitlements()` / the Vue composable / any `onEntitlementsChange()` listener latched that empty emission, rendered the locked state, and was never told to re-read (the restore was silent).

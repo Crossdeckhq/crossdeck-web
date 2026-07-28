@@ -29,7 +29,7 @@
  */
 
 import { createElement, useEffect, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
-import { Crossdeck } from "./crossdeck";
+import { Crossdeck } from "./singleton";
 import type { CrossdeckOptions } from "./types";
 import type { TrustToken, TrustTokenStatus } from "./trust";
 export type { TrustTokenStatus };

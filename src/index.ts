@@ -6,7 +6,8 @@
  * isolated instances (e.g. one per tenant in a multi-tenant SaaS shell).
  */
 
-export { Crossdeck, CrossdeckClient } from "./crossdeck";
+export { Crossdeck } from "./singleton";
+export { CrossdeckClient } from "./crossdeck";
 export { CrossdeckError } from "./errors";
 // Crossdeck Trust — the human-proof panel. `Crossdeck.trust.panel(...)` is the
 // usual entry; `mountTrustPanel` is the framework-agnostic core for non-SDK use.

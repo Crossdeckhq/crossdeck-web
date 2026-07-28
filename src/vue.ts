@@ -19,7 +19,7 @@
  */
 
 import { ref, onMounted, onScopeDispose, type Ref } from "vue";
-import { Crossdeck } from "./crossdeck";
+import { Crossdeck } from "./singleton";
 import type { TrustTokenStatus } from "./trust";
 export type { TrustTokenStatus };
 

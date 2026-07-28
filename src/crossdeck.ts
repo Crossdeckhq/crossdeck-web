@@ -2053,10 +2053,14 @@ export class CrossdeckClient {
 }
 
 /**
- * Default singleton — most consumers want one SDK instance per app.
- * Creating extra instances is fine; just `new CrossdeckClient()`.
+ * The default singleton lives in `./singleton` (registry-backed, shared across
+ * every entry point). It is intentionally NOT exported from here: this module
+ * owns only the CLASS, so the dependency graph is one-way (singleton → crossdeck)
+ * with no cycle. A cyclic re-export made the bundler run `new CrossdeckClient()`
+ * before the class was initialised → "CrossdeckClient is not a constructor" at
+ * runtime. Import the singleton as `import { Crossdeck } from "@cross-deck/web"`.
+ * See singleton.ts (CD-155 duplicate-singleton defect).
  */
-export const Crossdeck = new CrossdeckClient();
 
 /**
  * Normalise the autoTrack option to a fully-resolved AutoTrackConfig.
