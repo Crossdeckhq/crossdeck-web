@@ -2,6 +2,14 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.13.3] — 2026-07-28
+
+**A paying customer no longer sees the paywall flash to "locked" when your app re-identifies them — the deterministic root cause.** This is the defect behind a Pro customer still seeing an upgrade prompt even though the server correctly returns their entitlement. On a **same-user re-identify** — which every React/Vue app triggers, because auth traits arrive in stages (uid first, then email, then profile name) so `identify()` runs 2–3 times with the same id — the entitlement cache emitted an **empty snapshot** to every subscriber *before* restoring the real value. `useEntitlement()` / `useEntitlements()` / the Vue composable / any `onEntitlementsChange()` listener latched that empty emission, rendered the locked state, and was never told to re-read (the restore was silent).
+
+- **The in-memory value was always correct** — which is why synchronous `isEntitled()` and your server-side gate were never wrong, and why the paid, money-costing endpoints stayed correctly protected the whole time. Only the **reactive UI** flashed the paywall.
+- **The fix:** `setUserKey()` now restores the user's last-known-good **first**, then emits the settled snapshot exactly once. One code path for both the identity switch and the same-id re-identify — subscribers never observe a transient empty state. No app changes needed; the paywall clears on upgrade.
+- **Also hardened — stale-fetch clobber (`getEntitlements`).** Because `identify()` and explicit callers keep ≥2 entitlement fetches in flight (plus the anonymous boot fetch), an early request could resolve *after* the customer identified and overwrite the authoritative answer with a stale one (last-writer-wins). Each fetch now carries an identity **generation** captured before the request; if the identity rotates while it's in flight, the stale write is dropped.
+
 ## [1.13.2] — 2026-07-28
 
 **`identify()` now settles entitlements from the server — `isEntitled()` is correct the moment `await identify()` resolves.** Previously, `identify()` switched the caller to the new user's local entitlement slot but never asked the server what that user is entitled to. A user who identified after signing in read `isEntitled("pro") === false` until the app separately called `getEntitlements()` — the footgun behind a paying customer briefly seeing the free experience. Now, when the newly-identified user's slot has no cached last-known-good, `identify()` queries the server (the authority) and settles the answer before it resolves.

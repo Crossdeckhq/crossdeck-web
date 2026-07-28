@@ -14,5 +14,5 @@
  *
  * Do NOT edit by hand — `node scripts/sync-sdk-versions.mjs`.
  */
-export const SDK_VERSION = "1.13.2";
+export const SDK_VERSION = "1.13.3";
 export const SDK_NAME = "@cross-deck/web";

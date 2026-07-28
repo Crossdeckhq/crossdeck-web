@@ -45,6 +45,41 @@ describe("entitlements survive identify()", () => {
     await c.identify("user_847");
     expect(c.isEntitled("pro")).toBe(true);
   });
+
+  it("DEFECT 2 — a stale getEntitlements resolving AFTER an identity rotation must not clobber the current identity", async () => {
+    // The anonymous boot fetch (returns []) is held in flight, then resolves
+    // LATE — after we've identified a paying user. Its generation is stale,
+    // so its write must be dropped; last-writer-wins would otherwise flip a
+    // pro customer back to free.
+    let releaseAnon!: (v: unknown) => void;
+    const anonPending = new Promise((r) => { releaseAnon = r; });
+    let entCall = 0;
+    globalThis.fetch = vi.fn(async (url: any) => {
+      const u = String(url);
+      if (u.includes("/identity/alias")) return res({ crossdeckCustomerId: "cdcust_847" });
+      if (u.includes("/entitlements")) {
+        entCall += 1;
+        if (entCall === 1) {
+          await anonPending; // anon fetch hangs...
+          return res({ object: "list", data: [], crossdeckCustomerId: null }); // ...then resolves free, stale
+        }
+        return res({ object: "list", data: [PRO], crossdeckCustomerId: "cdcust_847" }); // user_847 is pro
+      }
+      return res({ ok: true });
+    }) as any;
+
+    const c = new CrossdeckClient();
+    c.init({ appId: "app_web_test", publicKey: "cd_pub_test_001", environment: "sandbox",
+      storage: new MemoryStorage(), autoHeartbeat: false, disableContractAssertions: true });
+
+    const anonFetch = c.getEntitlements().catch(() => {}); // in flight under the anon generation
+    await c.identify("user_847"); // rotates identity (bumps generation) + refetches [pro]
+    expect(c.isEntitled("pro")).toBe(true);
+
+    releaseAnon(null); // stale anon [] resolves now, under the OLD generation
+    await anonFetch;
+    expect(c.isEntitled("pro")).toBe(true); // NOT clobbered
+  });
 });
 
 describe("per-user cache isolation", () => {

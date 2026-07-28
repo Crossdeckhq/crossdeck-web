@@ -1193,6 +1193,13 @@ export class CrossdeckClient {
    */
   async getEntitlements(): Promise<PublicEntitlement[]> {
     const s = this.requireStarted();
+    // Capture the identity generation BEFORE the await. If setUserKey()
+    // rotates the identity while this request is in flight, the generation
+    // moves and we drop the write below — a stale fetch (the anonymous boot
+    // fetch, or one started under a prior slot, or an out-of-order resolve
+    // among the ≥2 fetches identify() + explicit callers keep in flight)
+    // can never clobber the authoritative answer for the identity NOW.
+    const gen = s.entitlements.generation;
     const query = this.identityQueryParams();
     let result: EntitlementsListResponse;
     try {
@@ -1209,6 +1216,14 @@ export class CrossdeckClient {
       // the failure.
       s.entitlements.markRefreshFailed();
       throw err;
+    }
+    if (gen !== s.entitlements.generation) {
+      // Identity rotated (a setUserKey since we started). This response
+      // belongs to a prior identity — discard it entirely: don't write the
+      // cache, don't stamp the crossdeckCustomerId. Return the data to the
+      // caller unapplied so the call still resolves, but the authoritative
+      // answer for the current identity stands untouched.
+      return Array.isArray(result.data) ? result.data : [];
     }
     if (result.crossdeckCustomerId) {
       s.identity.setCrossdeckCustomerId(result.crossdeckCustomerId);

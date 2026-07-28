@@ -83,6 +83,20 @@ export class EntitlementCache {
   private readonly storageKeyPrefix: string;
   private readonly staleAfterMs: number;
   private currentSuffix: string = ANON_SUFFIX;
+  private _generation = 0;
+
+  /**
+   * Monotonic identity generation. Bumped on every setUserKey() (identity
+   * switch OR same-id re-identify). An async getEntitlements() captures this
+   * before its await and drops its write if the generation moved while the
+   * request was in flight — so a stale fetch (e.g. the anonymous boot fetch,
+   * or one started under a prior slot) can never clobber the authoritative
+   * answer for the user who is identified NOW. Last-writer-wins is the enemy;
+   * this makes the write conditional on "still the same identity".
+   */
+  get generation(): number {
+    return this._generation;
+  }
 
   /**
    * @param storage          Device storage adapter. When omitted (tests) or
@@ -143,27 +157,28 @@ export class EntitlementCache {
    * setFromList() so the write lands under the right key.
    */
   setUserKey(userId: string | null): void {
-    const nextSuffix = EntitlementCache.suffixForUserId(userId);
-    if (nextSuffix === this.currentSuffix) {
-      // Same user (or repeated anonymous) — still unconditionally
-      // wipe in-memory cache to satisfy the founder's "unconditional
-      // clear on identify" contract.
-      this.all = [];
-      this.lastUpdated = 0;
-      this.lastRefreshFailedAt = 0;
-      this.notify();
-      // Re-hydrate from the same slot so a fresh boot's
-      // last-known-good is honoured.
-      this.hydrate();
-      return;
-    }
-    this.currentSuffix = nextSuffix;
-    // New slot: wipe in-memory + rehydrate from new slot.
-    this.all = [];
+    // ONE code path for both the different-user switch AND the same-id
+    // re-identify (React/Vue providers call identify() 2–3 times as auth
+    // traits populate in stages: uid, then email, then profile name).
+    //
+    // Order is load-bearing and was the bug: hydrate() BEFORE notify().
+    // The previous same-id branch did notify() FIRST (emitting an EMPTY
+    // snapshot) then hydrate() SILENTLY — so every onEntitlementsChange
+    // subscriber (useEntitlement / useEntitlements / the Vue composable /
+    // any hand-rolled listener) latched `[]` → rendered the paywall → and
+    // was never told to re-read, because the restore didn't notify. The
+    // in-memory `all` ended up correct (which is why synchronous
+    // isEntitled() and the server-side gate were never wrong, and why the
+    // per-user-cache-isolation self-check stayed quiet), but the EMITTED
+    // stream was corrupted. Restore first, then emit the SETTLED state
+    // exactly once: subscribers never observe an empty flash.
+    this.currentSuffix = EntitlementCache.suffixForUserId(userId); // no-op if unchanged
+    this._generation++; // invalidate any getEntitlements() in flight under the old identity
+    this.all = []; // unconditional in-memory clear (founder contract) — transient, no notify between
     this.lastUpdated = 0;
     this.lastRefreshFailedAt = 0;
-    this.hydrate();
-    this.notify();
+    this.hydrate(); // restore THIS slot's last-known-good first
+    this.notify(); // emit the settled snapshot once
   }
 
   /**

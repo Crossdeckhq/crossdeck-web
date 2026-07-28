@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { EntitlementCache } from "../src/entitlement-cache";
+import { MemoryStorage } from "../src/storage";
 import type { PublicEntitlement } from "../src/types";
 
 function ent(key: string, isActive = true): PublicEntitlement {
@@ -161,6 +162,60 @@ describe("EntitlementCache", () => {
         // First listener already unsubscribed — only second fires now.
         "second listener fired",
       ]);
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Regression: the emitted STREAM on setUserKey(). These assert what
+  // subscribers OBSERVE (onEntitlementsChange), not the final in-memory
+  // state — the only lens that catches a notify-ordering fault. The
+  // pre-fix same-id branch did notify() BEFORE hydrate(), flashing an
+  // empty snapshot to every useEntitlement/useEntitlements/Vue subscriber,
+  // which latched the paywall. Prior tests all passed because `this.all`
+  // ends up correct after hydrate; only a stream assertion sees the bug.
+  // ---------------------------------------------------------------------
+  describe("setUserKey emitted stream (paywall-flash regression)", () => {
+    it("same-user re-identify never emits an empty snapshot to subscribers", () => {
+      const c = new EntitlementCache(new MemoryStorage());
+      c.setUserKey("user_1");
+      c.setFromList([ent("pro")]); // persist [pro] under user_1's slot
+      const seen: string[][] = [];
+      c.subscribe((snap) => seen.push(snap.map((e) => e.key)));
+      // Progressive-trait re-identify: providers call identify() again with
+      // the SAME uid as email/name populate. This is the hot path.
+      c.setUserKey("user_1");
+      expect(seen.length).toBeGreaterThan(0);
+      // EVERY emission must carry pro — no transient [] the hook can latch.
+      expect(seen.every((keys) => keys.includes("pro"))).toBe(true);
+      expect(c.isEntitled("pro")).toBe(true);
+    });
+
+    it("returning to a prior user emits that user's settled entitlements, never empty", () => {
+      const store = new MemoryStorage();
+      const c = new EntitlementCache(store);
+      c.setUserKey("user_A");
+      c.setFromList([ent("pro")]); // A is pro
+      c.setUserKey("user_B");
+      c.setFromList([]); // B is free
+      const seen: string[][] = [];
+      c.subscribe((snap) => seen.push(snap.map((e) => e.key)));
+      c.setUserKey("user_A"); // switch back — must restore + emit [pro]
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.every((keys) => keys.includes("pro"))).toBe(true);
+      expect(c.isEntitled("pro")).toBe(true);
+    });
+
+    it("bumps generation on every setUserKey — switch AND same-id re-identify", () => {
+      const c = new EntitlementCache(new MemoryStorage());
+      const g0 = c.generation;
+      c.setUserKey("user_1");
+      expect(c.generation).toBeGreaterThan(g0);
+      const g1 = c.generation;
+      c.setUserKey("user_1"); // same id still counts (invalidates in-flight fetches)
+      expect(c.generation).toBeGreaterThan(g1);
+      const g2 = c.generation;
+      c.setUserKey("user_2");
+      expect(c.generation).toBeGreaterThan(g2);
     });
   });
 });
