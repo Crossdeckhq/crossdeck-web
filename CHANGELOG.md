@@ -2,6 +2,14 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.1] — 2026-08-20
+
+**`consentBanner` is OPT-OUT by default. 1.14.0 shipped it consent-first, which was wrong for the full SDK.** Switching the banner on no longer denies analytics: the SDK keeps collecting exactly as it does today and the visitor may decline. 1.14.0 silently zeroed analytics for anyone who enabled the banner — an EU posture imposed on every install, including the majority of the world where opt-out is lawful. Crossdeck does not decide a customer's legal posture on their own site; we give them the switch, not the opinion.
+
+- **Opt-in is now an explicit choice:** `consentBanner: { policyUrl, denyUntilChoice: true }` restores consent-first for operators who need it (EU/EEA — GDPR + ePrivacy).
+- **The widget opens showing the truth.** It is seeded from the live consent state, so an opt-out banner renders with analytics already on and an opt-in one does not.
+- **Unchanged:** enforcement stays core (the `consent()` socket, GPC honoured by default), and the GUEST build `@cross-deck/web-lite` / `startConsentMode()` stays **consent-first** — on someone else's site the visitor never chose us, so prior consent is the only defensible default. That split is the point of having two builds.
+
 ## [1.14.0] — 2026-08-06
 
 **Consent Mode — the privacy-restricted guest build (Path B) lands in the SDK.** A new surface for marketplace / guest installs (Webflow, Wix, Squarespace, …) where Crossdeck is a guest on someone else's site and must behave like one. `startConsentMode()` boots a consent-first posture and mounts the branded Crossdeck Consent widget. **Additive — the full SDK's defaults are unchanged**; this is a separate boot profile, not a change to `init()`/`track()`/`identify()`.

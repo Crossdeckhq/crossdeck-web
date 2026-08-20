@@ -718,10 +718,21 @@ export class CrossdeckClient {
         banner = g;
         coex = g;
       }
-      if (!this.state) return;
+      const st = this.state;
+      if (!st) return;
 
-      // Nothing leaves the SDK until the visitor decides.
-      this.consent({ analytics: false, marketing: false });
+      // OPT-OUT by default — the full SDK keeps running exactly as it does
+      // today and the visitor may decline. Crossdeck does NOT impose a consent
+      // posture on the customer's own site: opt-out is lawful in much of the
+      // world, and an operator who switches a banner on should not silently
+      // lose their analytics. Those who need opt-in (EU/EEA) set
+      // `denyUntilChoice: true` and get consent-first.
+      //
+      // (The GUEST build, @cross-deck/web-lite, IS consent-first — there we
+      // are on someone else's site and the site owner never chose us.)
+      if (opts.denyUntilChoice) {
+        this.consent({ analytics: false, marketing: false });
+      }
 
       const existing = coex.detectExistingConsent();
       if (existing) {
@@ -738,10 +749,18 @@ export class CrossdeckClient {
         return;
       }
 
+      const current = this.consent({});
       banner.mountConsentBanner({
         target: opts.target,
         policyUrl: opts.policyUrl,
         categories: opts.categories,
+        // Show the visitor what is ACTUALLY on right now — so an opt-out
+        // banner opens with analytics enabled, and an opt-in one does not.
+        existingConsent: {
+          analytics: current.analytics,
+          marketing: current.marketing,
+          identityOptIn: st.consent.identityOptIn,
+        },
         consent: { set: (partial) => this.consent(partial) },
         onChange: (state) => {
           this.setIdentityOptIn(state.identityOptIn);

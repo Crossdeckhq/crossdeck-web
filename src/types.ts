@@ -88,6 +88,18 @@ export interface ConsentBannerInit {
   categories?: Partial<import("./consent-banner").ConsentCategoriesConfig>;
   /** Called on every choice. */
   onChange?: (state: import("./consent-banner").ConsentBannerState) => void;
+  /**
+   * Consent-FIRST (opt-in): deny analytics + marketing until the visitor
+   * chooses.
+   *
+   * Default `false` — the SDK keeps collecting and the visitor may opt OUT,
+   * which is lawful in much of the world. Set `true` if you operate under a
+   * regime that requires prior consent (EU/EEA: GDPR + ePrivacy).
+   *
+   * Crossdeck does not decide this for you. It is your site and your legal
+   * posture; we give you the switch, not the opinion.
+   */
+  denyUntilChoice?: boolean;
 }
 
 export interface CrossdeckOptions {
@@ -135,10 +147,17 @@ export interface CrossdeckOptions {
    * to be present: we adopt its answer and render nothing. With no CMP and no
    * `policyUrl`, we refuse to render a policy-less banner and say so.
    *
-   * Turning it on is consent-FIRST: analytics + marketing stay denied until
-   * the visitor chooses, because a banner that gates nothing is the lawsuit,
-   * not the fix. If an existing CMP (or GPC) is detected we defer to it and
-   * never render a second banner.
+   * Turning it on is OPT-OUT by default: the SDK keeps collecting exactly as
+   * it does today and the visitor may decline. Crossdeck does not impose a
+   * consent posture on your site. If you need opt-in (EU/EEA), say so
+   * explicitly:
+   *
+   * ```js
+   * consentBanner: { policyUrl: "…", denyUntilChoice: true }
+   * ```
+   *
+   * If an existing CMP (or GPC) is detected we defer to it and never render a
+   * second banner.
    *
    * NOTE: consent ENFORCEMENT is always on regardless of this flag —
    * `Crossdeck.consent({ analytics: false })` is the socket any external

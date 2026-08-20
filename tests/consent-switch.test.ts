@@ -54,9 +54,24 @@ describe("consent light switch", () => {
     expect(widgetHosts().length).toBeGreaterThan(0);
   });
 
-  it("denies analytics + marketing until the visitor chooses", async () => {
+  it("is OPT-OUT by default — analytics keep running, visitor may decline", async () => {
     const c = new CrossdeckClient();
     c.init({ ...OPTS, consentBanner: "https://example.com/privacy" });
+    await settle();
+    const state = c.consent({});
+    expect(state.analytics).toBe(true);
+    expect(state.marketing).toBe(true);
+  });
+
+  it("goes consent-first ONLY when the operator asks (denyUntilChoice)", async () => {
+    const c = new CrossdeckClient();
+    c.init({
+      ...OPTS,
+      consentBanner: {
+        policyUrl: "https://example.com/privacy",
+        denyUntilChoice: true,
+      },
+    });
     await settle();
     const state = c.consent({});
     expect(state.analytics).toBe(false);
