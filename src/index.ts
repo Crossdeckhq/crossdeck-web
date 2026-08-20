@@ -22,15 +22,22 @@ export type {
   MountTrustPanelOptions,
   CrossdeckTrustNamespace,
 } from "./trust";
-// Crossdeck Consent — the branded consent-mode guest widget (Path B, CD-185).
-// Shadow-DOM (no iframe), gates autocapture on a recorded choice, defers to any
-// existing CMP. `mountConsentBanner` is the framework-agnostic core; bundled in
-// every connector's injected SDK so it auto-appears on install.
-export {
-  mountConsentBanner,
-  CONSENT_INFO_URL,
-  CONSENT_STORAGE_KEY,
-} from "./consent-banner";
+// Crossdeck Consent — OPT-IN (CD-185).
+//
+// Consent ENFORCEMENT is core and always shipped: the ConsentManager, the
+// public `Crossdeck.consent()` socket that ANY external CMP plugs into, and
+// GPC. That is the legal floor — a customer's own banner can always tell us
+// "stop tracking", and nobody has to opt in to that.
+//
+// Consent PRESENTATION — the branded Crossdeck banner, the CMP auto-detect
+// adapters, and the guest boot profile — is a FEATURE you switch on, never a
+// tax on every install. Two ways to turn it on:
+//
+//   Crossdeck.init({ …, consentBanner: true })            ← the light switch
+//   import { mountConsentBanner } from "@cross-deck/web/consent"
+//
+// The widget is code-split, so its bytes are fetched only when enabled. Types
+// are erased at build time, so re-exporting them here costs zero bytes.
 export type {
   ConsentBannerOptions,
   ConsentBannerHandle,
@@ -42,16 +49,11 @@ export type {
   ConsentCategoriesConfig,
   CrossdeckConsentNamespace,
 } from "./consent-banner";
-export { startConsentMode } from "./consent-mode";
 export type {
   ConsentModeOptions,
   ConsentModeHandle,
   ConsentOwner,
 } from "./consent-mode";
-export {
-  detectExistingConsent,
-  subscribeToExternalConsent,
-} from "./consent-coexistence";
 export type {
   ExistingConsentSource,
   ConsentMechanism,

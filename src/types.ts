@@ -75,6 +75,21 @@ export interface HeartbeatResponse {
  * (NorthStar §13.1) so the backend can correlate events against the
  * specific app surface and refuse mismatched env declarations loudly.
  */
+/**
+ * Config for the opt-in Crossdeck Consent widget (see `consentBanner`).
+ * Types only — erased at build time, so this costs zero bytes.
+ */
+export interface ConsentBannerInit {
+  /** Where to mount. Defaults to a fixed bottom-left corner. */
+  target?: HTMLElement | string;
+  /** The SITE OWNER's privacy-policy URL, linked from the widget. */
+  policyUrl?: string;
+  /** Override which categories are offered. */
+  categories?: Partial<import("./consent-banner").ConsentCategoriesConfig>;
+  /** Called on every choice. */
+  onChange?: (state: import("./consent-banner").ConsentBannerState) => void;
+}
+
 export interface CrossdeckOptions {
   /**
    * Your Crossdeck App ID (e.g. "app_web_xxx"). Required.
@@ -98,6 +113,38 @@ export interface CrossdeckOptions {
    * route prod telemetry into sandbox dashboards.
    */
   environment: Environment;
+  /**
+   * Crossdeck Consent — the light switch.
+   *
+   * `true` (or an options object) mounts the branded Crossdeck consent
+   * banner. Off by default: most sites already run their own CMP, so the
+   * widget is a FEATURE you switch on, never a tax on every install. The
+   * widget is code-split — leave this unset and you download none of it.
+   *
+   * The terse form is your privacy-policy URL — a consent banner must link
+   * to one, so passing it IS the switch:
+   *
+   * ```js
+   * Crossdeck.init({
+   *   appId, publicKey, environment,
+   *   consentBanner: "https://yoursite.com/privacy",
+   * });
+   * ```
+   *
+   * `true` also works, and is the right form when you expect an existing CMP
+   * to be present: we adopt its answer and render nothing. With no CMP and no
+   * `policyUrl`, we refuse to render a policy-less banner and say so.
+   *
+   * Turning it on is consent-FIRST: analytics + marketing stay denied until
+   * the visitor chooses, because a banner that gates nothing is the lawsuit,
+   * not the fix. If an existing CMP (or GPC) is detected we defer to it and
+   * never render a second banner.
+   *
+   * NOTE: consent ENFORCEMENT is always on regardless of this flag —
+   * `Crossdeck.consent({ analytics: false })` is the socket any external
+   * banner plugs into, and GPC is honoured by default.
+   */
+  consentBanner?: boolean | string | ConsentBannerInit;
   /**
    * Override the API base URL. Default is https://api.cross-deck.com/v1.
    * Useful for self-hosted setups or pointing at the local emulator

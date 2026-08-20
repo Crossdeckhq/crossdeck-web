@@ -183,13 +183,58 @@ const distDir = path.resolve(new URL(".", import.meta.url).pathname, "../dist");
 // react to 59.03, just over the old 65/59. Raise core ESM/CJS 65 → 67 and
 // react/vue 59 → 61 (~1.7 KB above current) so a tiny future change doesn't
 // refight the budget. UMD unaffected (registry code is trivially small).
+// v1.14.0 re-baseline. Two things moved at once, so the numbers are NOT
+// comparable to the 1.13.x line:
+//
+//  1. MEASUREMENT (stricter): these are now the gzipped ENTRY + every chunk
+//     it imports STATICALLY. Code splitting had turned an entry into a thin
+//     shell, so the old entry-only measurement would have reported ~7 KB for
+//     a 67 KB download. Lazily-imported chunks are excluded on purpose.
+//  2. CONTENT: the consent WIDGET left core (~7 KB off ESM and off UMD) and
+//     is now fetched only when `consentBanner` is switched on. In its place
+//     core gained a little genuine enforcement: GPC honoured by default,
+//     identity opt-in, URL-param stripping, history-wrap control.
+//
+// Net effect: core is ~7 KB lighter than the un-shipped 1.14.0 build and
+// ~1 KB above the 1.13.5 line for the new core features. Budgets below are
+// set just above the measured truth so any future creep still trips.
 const BUDGETS = [
-  { file: "index.mjs", maxGzipKb: 67, label: "core ESM" },
-  { file: "index.cjs", maxGzipKb: 67, label: "core CJS" },
-  { file: "react.mjs", maxGzipKb: 61, label: "react ESM" },
+  { file: "index.mjs", maxGzipKb: 68, label: "core ESM" },
+  // CJS does not code-split (esbuild splitting is ESM-only, and forcing it
+  // duplicated shared code). It is a compatibility path, not a browser
+  // download path, so it stays one file and inlines the widget.
+  { file: "index.cjs", maxGzipKb: 76, label: "core CJS" },
+  { file: "react.mjs", maxGzipKb: 62, label: "react ESM" },
   { file: "vue.mjs", maxGzipKb: 61, label: "vue ESM" },
-  { file: "crossdeck.umd.min.js", maxGzipKb: 37, label: "UMD min" },
+  // Widget externalised to the companion crossdeck-consent.umd.min.js.
+  { file: "crossdeck.umd.min.js", maxGzipKb: 38, label: "UMD min" },
 ];
+
+
+/**
+ * Gzipped size of an entry plus every chunk it imports STATICALLY
+ * (transitively). Dynamic `import()` targets are excluded on purpose:
+ * they are not part of the initial download.
+ */
+function gzippedGraphKb(entryPath) {
+  const dir = path.dirname(entryPath);
+  const seen = new Set();
+  let bytes = 0;
+  const visit = (file) => {
+    if (seen.has(file) || !fs.existsSync(file)) return;
+    seen.add(file);
+    const src = fs.readFileSync(file);
+    bytes += zlib.gzipSync(src).length;
+    const text = src.toString("utf8");
+    // Static ESM (`from"./chunk-X.mjs"`) and CJS (`require("./chunk-X.cjs")`).
+    // A dynamic `import("./x")` is skipped by requiring `from` / `require`.
+    const re = /(?:from\s*|require\(\s*)["'](\.\/[^"']+\.(?:mjs|cjs|js))["']/g;
+    let m;
+    while ((m = re.exec(text)) !== null) visit(path.join(dir, m[1]));
+  };
+  visit(entryPath);
+  return bytes / 1024;
+}
 
 let failed = false;
 console.log("\nBundle-size budget check (gzipped):");
@@ -202,9 +247,14 @@ for (const { file, maxGzipKb, label } of BUDGETS) {
     failed = true;
     continue;
   }
-  const raw = fs.readFileSync(full);
-  const gzip = zlib.gzipSync(raw);
-  const kb = gzip.length / 1024;
+  // Measure the REAL initial payload, not just the entry file. Code
+  // splitting turns an entry into a thin shell that statically imports
+  // chunks; measuring the shell alone would report ~7 KB for a 67 KB
+  // download and make this gate blind. So: follow STATIC imports
+  // transitively and sum them. Lazily-imported chunks (the opt-in consent
+  // widget) are deliberately NOT counted — a customer who never switches
+  // consent on never downloads them, which is the whole point.
+  const kb = gzippedGraphKb(full);
   const ok = kb <= maxGzipKb;
   const status = ok ? "ok" : "FAIL";
   const bar = `${kb.toFixed(2).padStart(6)} KB / ${String(maxGzipKb).padStart(3)} KB`;

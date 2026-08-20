@@ -94,6 +94,7 @@ import type {
   IdentifyOptions,
   PublicEntitlement,
   PurchaseResult,
+  ConsentBannerInit,
 } from "./types";
 
 interface InternalState {
@@ -133,6 +134,7 @@ interface InternalState {
       // Consumed at construction (scopes the redundancy cookie); not stored in
       // the resolved options struct.
       | "cookieDomain"
+      | "consentBanner"
     >
   > & {
     sdkVersion: string;
@@ -661,7 +663,100 @@ export class CrossdeckClient {
     // The previous synchronous boot-test block is now replaced by the
     // async refinement above. Closing brace below remains the end of
     // init().
+
+    // ── Crossdeck Consent — the light switch (CD-185) ──────────────────
+    // Enforcement is already live above (ConsentManager + GPC). This mounts
+    // the branded WIDGET, and only when asked.
+    if (options.consentBanner) {
+      void this.mountConsentWidget(options.consentBanner);
+    }
     return;
+  }
+
+  /**
+   * Crossdeck Consent — mount the opt-in widget ("the light switch").
+   *
+   * The import is DYNAMIC on purpose: bundlers code-split the widget, so a
+   * customer who never flips the switch never downloads a byte of it. That is
+   * what keeps consent a FEATURE rather than a tax on every install.
+   *
+   * Consent-FIRST: analytics + marketing are denied until the visitor
+   * chooses. A banner that gates nothing is the lawsuit, not the fix.
+   *
+   * Never a second banner: if GPC or an existing CMP is detected we adopt its
+   * answer, subscribe to its changes, and render nothing.
+   *
+   * Fail-soft: any failure here logs one diagnostic and leaves the SDK
+   * running. Enforcement is unaffected — it lives in core, not in the widget.
+   */
+  private async mountConsentWidget(
+    cfg: true | string | ConsentBannerInit,
+  ): Promise<void> {
+    try {
+      const opts: ConsentBannerInit =
+        cfg === true ? {} : typeof cfg === "string" ? { policyUrl: cfg } : cfg;
+      // Code-split in bundled builds. The script-tag (UMD) build has no module
+      // loader, so it falls back to the companion global installed by
+      // crossdeck-consent.umd.min.js.
+      let banner: typeof import("./consent-banner");
+      let coex: typeof import("./consent-coexistence");
+      try {
+        [banner, coex] = await Promise.all([
+          import("./consent-banner"),
+          import("./consent-coexistence"),
+        ]);
+      } catch {
+        const g = (globalThis as unknown as {
+          CrossdeckConsent?: typeof import("./consent-banner") &
+            typeof import("./consent-coexistence");
+        }).CrossdeckConsent;
+        if (!g?.mountConsentBanner || !g?.detectExistingConsent) {
+          throw new Error(
+            'consent widget not loaded — add the crossdeck-consent.umd.min.js script tag, or import "@cross-deck/web/consent"',
+          );
+        }
+        banner = g;
+        coex = g;
+      }
+      if (!this.state) return;
+
+      // Nothing leaves the SDK until the visitor decides.
+      this.consent({ analytics: false, marketing: false });
+
+      const existing = coex.detectExistingConsent();
+      if (existing) {
+        const read = existing.read();
+        this.consent({
+          analytics: read.analytics ?? false,
+          marketing: read.marketing ?? false,
+        });
+        if (existing.emitsChanges) {
+          coex.subscribeToExternalConsent(existing, (partial) => {
+            this.consent(partial);
+          });
+        }
+        return;
+      }
+
+      banner.mountConsentBanner({
+        target: opts.target,
+        policyUrl: opts.policyUrl,
+        categories: opts.categories,
+        consent: { set: (partial) => this.consent(partial) },
+        onChange: (state) => {
+          this.setIdentityOptIn(state.identityOptIn);
+          opts.onChange?.(state);
+        },
+      });
+    } catch (err) {
+      try {
+        // eslint-disable-next-line no-console
+        console.warn(
+          "[crossdeck] consent banner failed to load — consent ENFORCEMENT is unaffected:",
+          err instanceof Error ? err.message : String(err),
+        );
+      } catch { /* ignore */ }
+    }
   }
 
   /**

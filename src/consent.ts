@@ -46,6 +46,11 @@ const ALL_GRANTED: ConsentState = {
 export class ConsentManager {
   private state: ConsentState = { ...ALL_GRANTED };
   private dntDenied = false;
+  /** GPC (navigator.globalPrivacyControl) — a legally binding opt-out in
+   *  several jurisdictions, so it is honoured ALWAYS: no flag, no opt-in.
+   *  Core enforcement, never a feature. (DNT stays behind `respectDnt`
+   *  because it is advisory and widely spoofed.) */
+  private gpcDenied = false;
   // Explicit identity opt-in (the consent widget's "Recognize me" switch).
   // Default TRUE so the CORE SDK identifies exactly as it does today — this is
   // additive. The consent-mode guest build (Path B) sets it false at boot and
@@ -65,7 +70,7 @@ export class ConsentManager {
    * browser says "don't track", we don't recognise, even if code disagrees.
    */
   setIdentityOptIn(v: boolean): void {
-    if (this.dntDenied) {
+    if (this.signalDenied) {
       this.identityOptInState = false;
       return;
     }
@@ -74,7 +79,7 @@ export class ConsentManager {
 
   /** Whether the visitor has explicitly opted in to being recognised. */
   get identityOptIn(): boolean {
-    return this.dntDenied ? false : this.identityOptInState;
+    return this.signalDenied ? false : this.identityOptInState;
   }
 
   /**
@@ -84,7 +89,7 @@ export class ConsentManager {
    * the developer code disagrees. That's the contract.
    */
   set(partial: Partial<ConsentState>): ConsentState {
-    if (this.dntDenied) return { ...this.state };
+    if (this.signalDenied) return { ...this.state };
     for (const k of Object.keys(partial) as Array<keyof ConsentState>) {
       const v = partial[k];
       if (typeof v === "boolean") this.state[k] = v;
@@ -110,9 +115,26 @@ export class ConsentManager {
 
   /** True iff the constructor detected and applied DNT. */
   get isDntDenied(): boolean {
-    return this.dntDenied;
+    return this.signalDenied;
   }
 
+  /** Either binding signal says no. */
+  private get signalDenied(): boolean {
+    return this.dntDenied || this.gpcDenied;
+  }
+
+  /** GPC — read defensively; a hostile/absent navigator must never throw. */
+  private detectGpc(): boolean {
+    try {
+      return (
+        typeof navigator !== "undefined" &&
+        (navigator as Navigator & { globalPrivacyControl?: boolean })
+          .globalPrivacyControl === true
+      );
+    } catch {
+      return false;
+    }
+  }
   private detectDnt(): boolean {
     try {
       const nav = (globalThis as { navigator?: Navigator }).navigator;
