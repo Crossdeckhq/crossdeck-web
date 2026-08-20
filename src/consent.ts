@@ -46,12 +46,35 @@ const ALL_GRANTED: ConsentState = {
 export class ConsentManager {
   private state: ConsentState = { ...ALL_GRANTED };
   private dntDenied = false;
+  // Explicit identity opt-in (the consent widget's "Recognize me" switch).
+  // Default TRUE so the CORE SDK identifies exactly as it does today — this is
+  // additive. The consent-mode guest build (Path B) sets it false at boot and
+  // flips it true only when the visitor opts in. `identify()` checks it.
+  private identityOptInState = true;
 
   constructor(options?: { respectDnt?: boolean }) {
     if (options?.respectDnt && this.detectDnt()) {
       this.dntDenied = true;
       this.state = { analytics: false, marketing: false, errors: false };
+      this.identityOptInState = false;
     }
+  }
+
+  /**
+   * Set the explicit identity opt-in. DNT forces it off and locks it — once the
+   * browser says "don't track", we don't recognise, even if code disagrees.
+   */
+  setIdentityOptIn(v: boolean): void {
+    if (this.dntDenied) {
+      this.identityOptInState = false;
+      return;
+    }
+    this.identityOptInState = v;
+  }
+
+  /** Whether the visitor has explicitly opted in to being recognised. */
+  get identityOptIn(): boolean {
+    return this.dntDenied ? false : this.identityOptInState;
   }
 
   /**

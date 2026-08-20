@@ -294,6 +294,20 @@ export interface AutoTrackOptions {
    * default. Default true in browsers, no-op everywhere else.
    */
   errors: boolean;
+  /**
+   * Strip query strings + URL fragments (`#hash`) and drop the referrer from
+   * page-view events before they leave the SDK. Default `false` (full URLs,
+   * unchanged). Set `true` for privacy-restricted / marketplace builds where
+   * analytics must not carry query params or referrers (Webflow requirement).
+   */
+  stripUrlParams?: boolean;
+  /**
+   * Wrap `history.pushState`/`replaceState` to track SPA navigations as new
+   * page views. Default `true`. Set `false` to capture only the initial page
+   * view per load and never monkey-patch host globals — required where a host
+   * (e.g. a marketplace guest build) forbids touching page globals.
+   */
+  wrapHistory?: boolean;
 }
 
 /** Minimal interface for any pluggable key-value persistence. */

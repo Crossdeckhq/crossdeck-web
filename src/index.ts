@@ -22,6 +22,43 @@ export type {
   MountTrustPanelOptions,
   CrossdeckTrustNamespace,
 } from "./trust";
+// Crossdeck Consent — the branded consent-mode guest widget (Path B, CD-185).
+// Shadow-DOM (no iframe), gates autocapture on a recorded choice, defers to any
+// existing CMP. `mountConsentBanner` is the framework-agnostic core; bundled in
+// every connector's injected SDK so it auto-appears on install.
+export {
+  mountConsentBanner,
+  CONSENT_INFO_URL,
+  CONSENT_STORAGE_KEY,
+} from "./consent-banner";
+export type {
+  ConsentBannerOptions,
+  ConsentBannerHandle,
+  ConsentBannerState,
+  ConsentRecord,
+  ConsentMethod,
+  ConsentBannerMode,
+  ConsentCategoryConfig,
+  ConsentCategoriesConfig,
+  CrossdeckConsentNamespace,
+} from "./consent-banner";
+export { startConsentMode } from "./consent-mode";
+export type {
+  ConsentModeOptions,
+  ConsentModeHandle,
+  ConsentOwner,
+} from "./consent-mode";
+export {
+  detectExistingConsent,
+  subscribeToExternalConsent,
+} from "./consent-coexistence";
+export type {
+  ExistingConsentSource,
+  ConsentMechanism,
+  VerificationStatus,
+  DetectExistingConsentOptions,
+  ConsentGlobals,
+} from "./consent-coexistence";
 export { MemoryStorage } from "./storage";
 export { SDK_NAME, SDK_VERSION, DEFAULT_BASE_URL } from "./http";
 export { CROSSDECK_ERROR_CODES, getErrorCode } from "./error-codes";

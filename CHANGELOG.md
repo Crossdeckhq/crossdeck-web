@@ -2,6 +2,15 @@
 
 All notable changes to `@cross-deck/web` will be documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.14.0] — 2026-08-06
+
+**Consent Mode — the privacy-restricted guest build (Path B) lands in the SDK.** A new surface for marketplace / guest installs (Webflow, Wix, Squarespace, …) where Crossdeck is a guest on someone else's site and must behave like one. `startConsentMode()` boots a consent-first posture and mounts the branded Crossdeck Consent widget. **Additive — the full SDK's defaults are unchanged**; this is a separate boot profile, not a change to `init()`/`track()`/`identify()`.
+
+- **New API:** `startConsentMode(opts)` (the single on-switch), `mountConsentBanner(opts)`, `detectExistingConsent()` + `subscribeToExternalConsent()` — the widget defers to any existing consent tool on the page (GPC / IAB TCF v2.2 / GPP / Google Consent Mode / Cookiebot / OneTrust / platform-native) and never renders a second banner.
+- **Guest posture:** autocapture off until consent, marketing off by default, identity is **explicit opt-in only** (new `setIdentityOptIn()`; `identify()` no-ops until granted — default `true`, so the core path is unchanged), host-scoped identity storage.
+- **New `autoTrack` options (additive; defaults preserve current behaviour):** `stripUrlParams` (drop query strings, fragments and referrers from analytics) and `wrapHistory` (set `false` to capture only the initial page view and never wrap `history.pushState`/`replaceState`).
+- **The consent-mode variant also ships standalone as `@cross-deck/web-lite`** — the clean-cut package for marketplace connectors, pinned + integrity-hashed for hosted delivery.
+
 ## [1.13.5] — 2026-07-28
 
 **The real fix: `@cross-deck/web` and `@cross-deck/web/react` now share ONE SDK instance.** This is the definitive cause of a paying customer seeing "Upgrade to PRO" while the network showed their entitlement resolving correctly — and why the 1.13.2 / 1.13.3 cache fixes didn't clear it (they were correct, but operating on the wrong object).

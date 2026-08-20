@@ -823,14 +823,17 @@ export class CrossdeckClient {
     // attributes to this user. Operational, like the entitlement cache, not an
     // analytics event; a no-op unless @cross-deck/buckets/web is installed.
     bridgeReadCost({ actor: userId });
-    if (!s.consent.analytics) {
-      // No-op on consent denial — but throw NOT — the developer
-      // expected an aliasResult to await. Return a no-op result that
+    if (!s.consent.analytics || !s.consent.identityOptIn) {
+      // No-op on consent denial OR when the visitor hasn't opted in to being
+      // recognised (the consent widget's "Recognize me" switch — off by default
+      // only in the consent-mode guest build; true everywhere else, so this is
+      // additive and the core identify() path is unchanged). Throw NOT — the
+      // developer expected an aliasResult to await. Return a no-op result that
       // mirrors the wire shape so existing call chains don't break.
-      s.debug.emit(
-        "sdk.consent_denied",
-        `identify() skipped — consent denied for analytics.`,
-      );
+      const reason = !s.consent.analytics
+        ? "consent denied for analytics"
+        : "identity opt-in not granted (Recognize me is off)";
+      s.debug.emit("sdk.consent_denied", `identify() skipped — ${reason}.`);
       return {
         object: "alias_result",
         crossdeckCustomerId: s.identity.crossdeckCustomerId ?? "",
@@ -1010,6 +1013,21 @@ export class CrossdeckClient {
     const next = s.consent.set(state);
     s.debug.emit("sdk.consent_changed", "Consent state updated.", { ...next });
     return next;
+  }
+
+  /**
+   * Set the explicit identity opt-in — the "Recognize me" choice. Default is
+   * `true` (core SDK identifies as normal); the consent-mode guest build sets it
+   * `false` at boot and flips it `true` only when the visitor opts in. While
+   * `false`, `identify()` no-ops. DNT forces it off and locks it.
+   */
+  setIdentityOptIn(optedIn: boolean): void {
+    const s = this.requireStarted();
+    s.consent.setIdentityOptIn(optedIn);
+    s.debug.emit(
+      "sdk.consent_changed",
+      `Identity opt-in ${optedIn ? "granted" : "withdrawn"}.`,
+    );
   }
 
   /** Snapshot of the current consent state. */
@@ -2150,6 +2168,8 @@ function resolveAutoTrack(
       clicks: false,
       webVitals: false,
       errors: false,
+      stripUrlParams: false,
+      wrapHistory: false,
     };
   }
   if (input === undefined || input === true) {
@@ -2162,6 +2182,8 @@ function resolveAutoTrack(
     clicks: input.clicks ?? DEFAULT_AUTO_TRACK.clicks,
     webVitals: input.webVitals ?? DEFAULT_AUTO_TRACK.webVitals,
     errors: input.errors ?? DEFAULT_AUTO_TRACK.errors,
+    stripUrlParams: input.stripUrlParams ?? DEFAULT_AUTO_TRACK.stripUrlParams,
+    wrapHistory: input.wrapHistory ?? DEFAULT_AUTO_TRACK.wrapHistory,
   };
 }
 

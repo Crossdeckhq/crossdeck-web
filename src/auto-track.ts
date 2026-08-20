@@ -53,6 +53,22 @@ export interface AutoTrackConfig {
   webVitals: boolean;
   /** Capture uncaught errors + unhandled rejections + 5xx fetch/XHR. Default true (browser only). */
   errors: boolean;
+  /**
+   * Strip query strings + URL fragments (`#hash`) and reduce the referrer to
+   * its origin before a page-view event leaves the SDK. Default false (full
+   * URLs, unchanged). The consent-mode guest build sets this true — marketplace
+   * reviewers (Webflow finding #3) require query/fragment/full-referrer stripped
+   * from analytics events.
+   */
+  stripUrlParams: boolean;
+  /**
+   * Wrap `history.pushState`/`replaceState` so SPA navigations register as new
+   * page views. Default true. Set false to capture only the initial page view
+   * per load and NEVER monkey-patch host globals — required for the consent-mode
+   * guest build (Webflow finding #7 forbids history wrapping). Fine for Webflow's
+   * mostly-static pages, which reload on navigation anyway.
+   */
+  wrapHistory: boolean;
 }
 
 export const DEFAULT_AUTO_TRACK: AutoTrackConfig = {
@@ -62,6 +78,8 @@ export const DEFAULT_AUTO_TRACK: AutoTrackConfig = {
   clicks: true,
   webVitals: true,
   errors: true,
+  stripUrlParams: false,
+  wrapHistory: true,
 };
 
 /**
@@ -617,7 +635,10 @@ export class AutoTracker {
 
     const fire = (force = false): void => {
       const loc = w.location;
-      const url = loc.href;
+      // Consent-mode guest build: strip query + fragment from the URL and drop
+      // the referrer entirely (Webflow finding #3). Default false → full URL.
+      const strip = this.cfg.stripUrlParams;
+      const url = strip ? `${loc.origin}${loc.pathname}` : loc.href;
       const now = Date.now();
       if (!force && url === lastFiredUrl && now - lastFiredAt < DEDUP_WINDOW_MS) return;
       lastFiredAt = now;
@@ -633,17 +654,24 @@ export class AutoTracker {
         pageviewId: this.pageviewId,
         path: loc.pathname,
         url,
-        search: loc.search || undefined,
-        hash: loc.hash || undefined,
+        search: strip ? undefined : loc.search || undefined,
+        hash: strip ? undefined : loc.hash || undefined,
         title: doc.title,
         // referrer only on the first hit of the session — afterward it's
-        // always our previous URL, which isn't useful.
-        referrer: doc.referrer || undefined,
+        // always our previous URL, which isn't useful. Dropped entirely when
+        // stripUrlParams is on (consent-mode); it also gates on marketing consent.
+        referrer: strip ? undefined : doc.referrer || undefined,
       });
     };
 
     // Initial page view
     fire();
+
+    // SPA navigation is tracked by wrapping history.pushState/replaceState.
+    // The consent-mode guest build sets wrapHistory:false so we NEVER
+    // monkey-patch host globals (Webflow finding #7) — only the initial page
+    // view above fires per load. Fine for mostly-static Webflow pages.
+    if (!this.cfg.wrapHistory) return;
 
     // SPA navigation: monkey-patch pushState / replaceState. Capture the
     // BARE function references (not bound) so uninstall restores exactly

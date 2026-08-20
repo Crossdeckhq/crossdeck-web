@@ -1,0 +1,155 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+/* ---- Crossdeck Consent — Stripe-premium, light + dark. Compact, bottom-left. ---- */
+:root{
+  --stage:#efe9dd;
+  --surface:#ffffff; --surface-2:#faf7f0;
+  --text:#17130f; --muted:#6b6259; --faint:#9a9088;
+  --border:rgba(23,19,17,.11); --hair:rgba(23,19,17,.07);
+  --accent:#ee4f25; --accent-strong:#c23a15;
+  --brand-a:#FF3D2E; --brand-b:#FF9A3D;
+  --track:rgba(23,19,17,.15); --lock:#efe9de;
+  --shadow:0 16px 40px -14px rgba(23,19,17,.30), 0 2px 6px rgba(23,19,17,.05);
+}
+.dark{
+  --stage:#141110;
+  --surface:#1c1917; --surface-2:#232019;
+  --text:#f4efe8; --muted:#a89f95; --faint:#7c7267;
+  --border:rgba(244,239,232,.13); --hair:rgba(244,239,232,.08);
+  --accent:#ff6a42; --accent-strong:#ff8862;
+  --track:rgba(244,239,232,.17); --lock:#2a2521;
+  --shadow:0 20px 46px -14px rgba(0,0,0,.72), 0 2px 6px rgba(0,0,0,.4);
+}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:var(--stage);font-family:'Inter',-apple-system,system-ui,sans-serif;
+  color:var(--text);-webkit-font-smoothing:antialiased;transition:background .3s}
+.controls{position:fixed;top:16px;right:18px;z-index:50;display:flex;gap:8px}
+.controls button{font:inherit;font-size:12px;font-weight:600;padding:6px 12px;border-radius:99px;
+  border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer}
+.hidden{display:none!important}
+.mark{flex-shrink:0}
+
+/* everything anchors bottom-left */
+.dock{position:fixed;left:20px;bottom:20px;z-index:40}
+
+/* ---- ARRIVAL — slim compact banner ---- */
+.arr{width:330px;background:var(--surface);border:1px solid var(--border);border-radius:15px;box-shadow:var(--shadow);
+  padding:15px 16px 14px}
+.arr-brand{display:flex;align-items:center;gap:7px;margin-bottom:8px}
+.arr-brand .mark{width:16px;height:16px}
+.arr-brand b{font-size:12.5px;font-weight:640}
+.arr-brand .by{margin-left:auto;font-size:9.5px;font-weight:600;color:var(--faint);display:inline-flex;align-items:center;gap:4px;text-decoration:none}
+.arr-brand .by .mark{width:10px;height:10px}
+.arr-brand .by:hover{color:var(--muted)}
+.arr p{font-size:12px;line-height:1.5;color:var(--muted);margin:0 0 12px}
+.arr p b{color:var(--text);font-weight:600}
+.arr p a{color:var(--accent-strong);font-weight:600;text-decoration:none}
+.arr-btns{display:flex;align-items:center;gap:7px}
+.arr-btns .btn{flex:1}
+.arr-manage{font-size:11.5px;font-weight:600;color:var(--muted);background:none;border:none;cursor:pointer;padding:6px 2px 0;text-align:left}
+.arr-manage:hover{color:var(--text)}
+.arr-manage span{color:var(--accent-strong)}
+
+/* buttons */
+.btn{font:inherit;font-size:12px;font-weight:640;padding:8px 12px;border-radius:9px;cursor:pointer;
+  border:1px solid var(--border);background:var(--surface);color:var(--text);transition:transform .1s,border-color .12s}
+.btn:hover{transform:translateY(-1px);border-color:var(--accent)}
+.btn.primary{border:none;color:#fff;background:linear-gradient(120deg,var(--brand-a),var(--brand-b));box-shadow:0 4px 12px -3px rgba(255,61,46,.5)}
+.btn.primary:hover{border:none}
+
+/* ---- MANAGE — compact, bottom-left, still corner-anchored ---- */
+.mg{width:360px;background:var(--surface);border:1px solid var(--border);border-radius:15px;box-shadow:var(--shadow);overflow:hidden}
+.mg-head{padding:15px 16px 12px;border-bottom:1px solid var(--hair)}
+.mg-brand{display:flex;align-items:center;gap:7px;margin-bottom:8px}
+.mg-brand .mark{width:16px;height:16px}.mg-brand b{font-size:12.5px;font-weight:640}
+.mg-brand .env{margin-left:auto;font-size:9.5px;font-weight:600;color:var(--faint)}
+.mg-head strong{font-size:13.5px;font-weight:670;display:block}
+.cats{padding:2px 16px;max-height:250px;overflow-y:auto}
+.cat{padding:11px 0;border-bottom:1px solid var(--hair)}
+.cat:last-child{border-bottom:0}
+.cat-top{display:flex;align-items:flex-start;gap:10px}
+.cat-t{display:flex;flex-direction:column;gap:2px;min-width:0}
+.cat-t strong{font-size:12px;font-weight:640;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.tag{font-size:8.5px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;padding:1.5px 5px;border-radius:4px}
+.tag.anon{background:rgba(31,157,85,.12);color:#1f9d55}
+.tag.locked{background:var(--surface-2);color:var(--faint);border:1px solid var(--hair)}
+.tag.optin{background:rgba(238,79,37,.12);color:var(--accent-strong)}
+.dark .tag.optin{background:rgba(255,106,66,.16)}
+.cat-t span{font-size:10.5px;line-height:1.45;color:var(--muted)}
+.sw{margin-left:auto;margin-top:2px;flex-shrink:0;position:relative;width:36px;height:21px;border-radius:99px;background:var(--track);border:none;cursor:pointer;transition:background .18s;padding:0}
+.sw::after{content:"";position:absolute;top:2.5px;left:2.5px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.28);transition:transform .18s}
+.sw.on{background:linear-gradient(120deg,var(--brand-a),var(--brand-b))}
+.sw.on::after{transform:translateX(15px)}
+.sw.locked{background:var(--lock);cursor:not-allowed}
+.sw.locked::after{background:linear-gradient(120deg,var(--brand-a),var(--brand-b));transform:translateX(15px);box-shadow:none}
+.mg-actions{padding:12px 16px;display:flex;gap:7px;background:var(--surface-2);border-top:1px solid var(--hair)}
+.mg-actions .btn{flex:1}
+.mg-foot{padding:9px 16px;display:flex;align-items:center;justify-content:space-between;background:var(--surface-2);border-top:1px solid var(--hair)}
+.mg-foot a{font-size:10px;font-weight:600;color:var(--faint);display:inline-flex;align-items:center;gap:5px;text-decoration:none}
+.mg-foot a .mark{width:11px;height:11px}
+.mg-foot span{font-size:9px;color:var(--faint)}
+
+/* pill */
+.pill{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;padding:8px 12px;border-radius:99px;
+  background:var(--surface);border:1px solid var(--border);color:var(--text);box-shadow:0 6px 18px -6px rgba(23,19,17,.24);cursor:pointer}
+.pill .mark{width:13px;height:13px}
+</style></head><body>
+<div class="controls">
+  <button onclick="document.body.classList.toggle('dark')">◑ Theme</button>
+  <button onclick="show('arr')">↻ Replay</button>
+</div>
+<svg width="0" height="0" style="position:absolute"><defs><linearGradient id="cd" x1="8" y1="6" x2="40" y2="42" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#FF3D2E"/><stop offset="1" stop-color="#FF9A3D"/></linearGradient></defs></svg>
+
+<div class="dock">
+  <!-- STATE 1 — ARRIVAL (slim, bottom-left) -->
+  <div class="arr" id="arr">
+    <div class="arr-brand">
+      <svg class="mark" viewBox="0 0 48 48"><path fill="url(#cd)" d="M13.9 8.2a4 4 0 0 0-5.7 5.6L18.3 24 8.2 34.2a4 4 0 1 0 5.7 5.6L24 29.7l10.1 10.1a4 4 0 0 0 5.7-5.6L29.7 24l10.1-10.2a4 4 0 1 0-5.7-5.6L24 18.3 13.9 8.2Z"/></svg>
+      <b>Your privacy</b>
+      <a class="by" href="https://cross-deck.com/consent" target="_blank" rel="noopener"><svg class="mark" viewBox="0 0 48 48"><path fill="url(#cd)" d="M13.9 8.2a4 4 0 0 0-5.7 5.6L18.3 24 8.2 34.2a4 4 0 1 0 5.7 5.6L24 29.7l10.1 10.1a4 4 0 0 0 5.7-5.6L29.7 24l10.1-10.2a4 4 0 1 0-5.7-5.6L24 18.3 13.9 8.2Z"/></svg>by Crossdeck</a>
+    </div>
+    <p><b>You choose what's collected.</b> Nothing but essentials runs until you say so. <a href="#">Privacy policy</a>.</p>
+    <div class="arr-btns">
+      <button class="btn primary" onclick="save()">Accept all</button>
+      <button class="btn" onclick="show('mg')">Manage</button>
+      <button class="btn" onclick="save()">Reject all</button>
+    </div>
+  </div>
+
+  <!-- STATE 2 — MANAGE -->
+  <div class="mg hidden" id="mg">
+    <div class="mg-head">
+      <div class="mg-brand">
+        <svg class="mark" viewBox="0 0 48 48"><path fill="url(#cd)" d="M13.9 8.2a4 4 0 0 0-5.7 5.6L18.3 24 8.2 34.2a4 4 0 1 0 5.7 5.6L24 29.7l10.1 10.1a4 4 0 0 0 5.7-5.6L29.7 24l10.1-10.2a4 4 0 1 0-5.7-5.6L24 18.3 13.9 8.2Z"/></svg>
+        <b>Your privacy</b><span class="env">This site uses Crossdeck</span>
+      </div>
+      <strong>Manage preferences</strong>
+    </div>
+    <div class="cats">
+      <div class="cat"><div class="cat-top"><div class="cat-t"><strong>Strictly necessary <span class="tag locked">On</span></strong><span>The site's own essential cookies — sign-in, session, core function. Crossdeck sets nothing here.</span></div><button class="sw locked" disabled></button></div></div>
+      <div class="cat"><div class="cat-top"><div class="cat-t"><strong>Analytics <span class="tag anon">Anonymous</span></strong><span>Page views, sessions, product usage — <b>anonymous</b>. Identified only if you turn on "Recognize me", never automatically.</span></div><button class="sw" onclick="this.classList.toggle('on')"></button></div></div>
+      <div class="cat"><div class="cat-top"><div class="cat-t"><strong>Recognize me <span class="tag optin">Identity opt-in</span></strong><span>Link activity to your account across visits and devices. On = your explicit identity opt-in; off = anonymous even when signed in.</span></div><button class="sw" onclick="this.classList.toggle('on')"></button></div></div>
+      <div class="cat"><div class="cat-top"><div class="cat-t"><strong>Marketing</strong><span>Referrer + ad-click IDs (<code>gclid</code>, <code>fbclid</code>…) for attribution, and a HubSpot arrival signal.</span></div><button class="sw" onclick="this.classList.toggle('on')"></button></div></div>
+    </div>
+    <div class="mg-actions">
+      <button class="btn" onclick="save()">Reject all</button>
+      <button class="btn" onclick="save()">Accept all</button>
+      <button class="btn primary" onclick="save()">Save</button>
+    </div>
+    <div class="mg-foot">
+      <a href="https://cross-deck.com/consent" target="_blank" rel="noopener"><svg class="mark" viewBox="0 0 48 48"><path fill="url(#cd)" d="M13.9 8.2a4 4 0 0 0-5.7 5.6L18.3 24 8.2 34.2a4 4 0 1 0 5.7 5.6L24 29.7l10.1 10.1a4 4 0 0 0 5.7-5.6L29.7 24l10.1-10.2a4 4 0 1 0-5.7-5.6L24 18.3 13.9 8.2Z"/></svg>Consent by Crossdeck</a>
+      <span>processes data on this site's behalf</span>
+    </div>
+  </div>
+
+  <!-- STATE 3 — pill -->
+  <div class="pill hidden" id="pill" onclick="show('mg')">
+    <svg class="mark" viewBox="0 0 48 48"><path fill="url(#cd)" d="M13.9 8.2a4 4 0 0 0-5.7 5.6L18.3 24 8.2 34.2a4 4 0 1 0 5.7 5.6L24 29.7l10.1 10.1a4 4 0 0 0 5.7-5.6L29.7 24l10.1-10.2a4 4 0 1 0-5.7-5.6L24 18.3 13.9 8.2Z"/></svg>
+    Privacy choices
+  </div>
+</div>
+
+<script>
+function show(id){['arr','mg','pill'].forEach(x=>document.getElementById(x).classList.add('hidden'));document.getElementById(id).classList.remove('hidden');}
+function save(){show('pill');}
+</script>
+</body></html>
